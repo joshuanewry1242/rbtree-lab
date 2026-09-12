@@ -7,9 +7,9 @@ deliverable.
 
 Must include, before submission:
 - [ ] one plan I revised (workflow Step 3)
-- [ ] one rejected / oversized diff (Step 4)
-- [ ] one tool-output debugging loop (Step 5)
-- [ ] one review finding I triaged, plus one false positive (Step 7)
+- [x] one rejected / oversized diff (Step 4) -- Episode 6
+- [x] one tool-output debugging loop (Step 5) -- Episode 3
+- [x] one review finding I triaged, plus one false positive (Step 7) -- Episode 7
 
 ---
 
@@ -98,3 +98,73 @@ is why the fix was routing memcheck to GitHub's Linux runners instead
 (apt-get install valgrind there is the normal, boring download I was
 picturing, just running somewhere valgrind actually exists).
 
+
+## Episode 5 -- getting CI actually green (three-round debugging loop)
+Prompt: Sent Claude screenshots of the Actions run failing, three separate
+times, asking it to diagnose and fix each one.
+Result: Round 1 -- ubuntu-latest's default gcc (13) doesn't recognize
+-std=c23, only the older draft name -std=c2x ("gcc: error: unrecognized
+command-line option '-std=c23'; did you mean '-std=c2x'?"). Fixed by
+pinning the job to the official gcc:14 container image instead of
+trusting whatever gcc the runner ships. Round 2 -- with the compiler
+fixed, make asan then failed on GCC's -Wformat-truncation (part of
+-Wextra on GCC, not flagged the same way by Apple clang, so invisible
+locally): a snprintf into an 8-byte key buffer in tests/fuzz.c could in
+theory need up to 11 bytes for the loop variable's worst-case int value.
+Fixed by sizing the buffer to 16. Round 3 -- make memcheck then failed
+with "ASan runtime does not come first in initial library list" and a
+suspicious 0-allocation report. Claude traced this to a real bug in the
+assignment's own Appendix B starter Makefile: make asan builds an
+ASan-instrumented binary and cleans up after itself, but make memcheck's
+rule (memcheck: all) never re-cleaned, so when it ran right after asan in
+the same CI job, make's timestamp check saw the binary was already newer
+than its sources and reused the leftover ASan binary instead of
+rebuilding -- valgrind was never actually testing a clean build. Fixed by
+changing the rule to memcheck: clean all, matching how asan already
+guards against this (asan: clean test).
+Judgment: I see that the error it github is still red and not green , and everytime we correct an error another pops up.
+
+
+## Episode 6 -- the Reach (rejected/oversized diff)
+Prompt: Asked Claude to implement the Reach (Section 10, teardown without
+recursion), deliberately not over-specifying how.
+Result: Claude added destroy_spine (rotates every node onto a right spine
+as it's freed, O(1) auxiliary space, no recursion) and a wrapper
+rb_destroy_reach, plus a test using it instead of rb_destroy. Not part of
+the public API, so nothing was added to include/rbtree.h; rb_destroy
+itself was untouched. Verified under make asan on a 10-node tree, plus a
+throwaway 496-node stress test.
+Judgment: Said "right size" first, then reconsidered and rejected it --
+specifically the comment on destroy_spine, which walked through both loop
+cases in full prose. That's more than this file's own convention gives
+comparably subtle helpers: rotate_left/rotate_right (real pointer surgery
+too) explain themselves in about two lines, not a case-by-case narration.
+Claude trimmed it to a single invariant line matching that style, reran
+make test and make asan to confirm nothing broke, and amended the commit
+(it hadn't been pushed yet, so no history got rewritten publicly). This
+is the real version of the "rejected diff" box -- not a menu choice made
+in advance, but an actual diff I read, judged, and sent back smaller for
+a specific, statable reason.
+
+
+## Episode 7 -- triaging the adversarial review findings
+Prompt: Ran an adversarial review (/code-review, targeted at the
+rb_delete/delete_fixup commit specifically, run as a fresh pass rather
+than the same context that wrote the code) hunting use-after-free, leaked
+values on overwrite, unchecked NULL, and missed subtrees in rb_destroy.
+Result: No correctness bugs found -- corroborated by the review's own
+independent verification pass plus 5M+ fuzz ops across 10 seeds, on top
+of everything already verified earlier. Three low-severity findings did
+survive: (1) the node-release free sequence (key, value, struct) was
+duplicated three times across node_release and both rb_delete branches;
+(2) the commit that added rb_delete also touched unrelated blank lines in
+rb_create/rb_insert/rb_size, against CLAUDE.md's "smallest diff, don't
+refactor unrelated code" rule; (3) rb_delete's key-lookup loop cites
+rb_find's invariant by reference ("same descent shape as rb_find")
+instead of stating its own one-line invariant inline, unlike every other
+loop in the file.
+Judgment: Picked (1) as the real finding -- planned the fix in plan mode
+first (see the node_release_payload split, committed separately),
+verified it didn't change behavior (make test/make asan clean, same
+ownership reasoning holds for both rb_delete branches). Picked (2) as the
+false positive / won't-fix:  Was not worth fixing, because it added an unecessary amount of lines of code.
