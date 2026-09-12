@@ -3,7 +3,13 @@ name: battery
 # Runs the full three-part battery CLAUDE.md requires (test, asan, memcheck)
 # on every push. This exists because valgrind doesn't support Apple Silicon
 # macOS, so `make memcheck` has no local environment on this machine --
-# ubuntu-latest gives a real one for free.
+# a Linux container gives a real one for free.
+#
+# Runs inside the official gcc:14 image rather than the runner's default
+# gcc (ubuntu-latest ships gcc-13, which only understands the older draft
+# flag -std=c2x, not -std=c23 -- confirmed by a real failed run: "gcc:
+# error: unrecognized command-line option '-std=c23'; did you mean
+# '-std=c2x'?"). GCC 14 is the first version that ships -std=c23 for real.
 
 on:
   push:
@@ -12,11 +18,12 @@ on:
 jobs:
   battery:
     runs-on: ubuntu-latest
+    container: gcc:14
     steps:
       - uses: actions/checkout@v4
 
       - name: Install valgrind
-        run: sudo apt-get update && sudo apt-get install -y valgrind
+        run: apt-get update && apt-get install -y valgrind
 
       - name: make test
         run: make test
