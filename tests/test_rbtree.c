@@ -1,14 +1,16 @@
 #include "rbtree.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-/* M2: table-driven rb_delete case tests, written before rb_delete exists
- * (workflow Step 4) so they fail red first. Every row targets a *known*
- * shape, not a hoped-for one: both fixture trees below were built purely
- * through rb_insert (already implemented and verified), then inspected
- * with a throwaway whitebox dump tool to confirm each target node's exact
- * role before it went into this table. See PROMPTLOG.md. */
+/* M1 unit tests, M2's table-driven rb_delete cases (written before
+ * rb_delete existed -- workflow Step 4 -- so they failed red first), and
+ * M3 hardening/edge cases, in that order. The delete-case fixture trees
+ * were built purely through rb_insert (already implemented and verified),
+ * then inspected with a throwaway whitebox dump tool to confirm each
+ * target node's exact role before it went into the table. See
+ * PROMPTLOG.md. */
 
 static int failures = 0;
 
@@ -71,8 +73,150 @@ static void run_case(const struct delete_case *c)
 	rb_destroy(t);
 }
 
+/* ---------------------------------------------------------------------------
+ * M1: insert / find / overwrite / foreach / destroy.
+ * ------------------------------------------------------------------------- */
+
+static void test_insert_find(void)
+{
+	printf("test: insert + find basics\n");
+	rbtree_t *t = rb_create(NULL);
+	static const char *const keys[] = { "m", "c", "x", "a", "g", "p", "z" };
+	size_t n = sizeof keys / sizeof keys[0];
+
+	for (size_t i = 0; i < n; i++)
+		CHECK(rb_insert(t, keys[i], (void *)keys[i]) == 0, "insert failed");
+	CHECK(rb_size(t) == n, "size mismatch after inserts");
+	CHECK(rb_validate(t) == 0, "tree invalid after inserts");
+
+	for (size_t i = 0; i < n; i++)
+		CHECK(rb_find(t, keys[i]) == keys[i], "find returned wrong/missing value");
+	CHECK(rb_find(t, "nope") == NULL, "find on an absent key returned non-NULL");
+
+	rb_destroy(t);
+}
+
+static int owf_calls = 0;
+static void owf_count(void *v) { owf_calls++; free(v); }
+
+static void test_insert_overwrite(void)
+{
+	printf("test: insert overwrite (ownership)\n");
+	rbtree_t *t = rb_create(owf_count);
+	int *a = malloc(sizeof *a); *a = 1;
+	int *b = malloc(sizeof *b); *b = 2;
+	owf_calls = 0;
+
+	CHECK(rb_insert(t, "dup", a) == 0, "first insert failed");
+	CHECK(owf_calls == 0, "value_free called before any overwrite");
+
+	CHECK(rb_insert(t, "dup", b) == 0, "overwrite insert returned nonzero");
+	CHECK(owf_calls == 1, "overwrite should free the old value exactly once");
+	CHECK(rb_size(t) == 1, "overwrite must not change tree size");
+
+	int *found = rb_find(t, "dup");
+	CHECK(found != NULL && *found == 2, "find after overwrite returned the old value");
+
+	rb_destroy(t); /* should free b (owf_calls -> 2), never a again */
+	CHECK(owf_calls == 2, "destroy should free exactly the current value once");
+}
+
+static char foreach_buf[256];
+static void foreach_collect(const char *key, void *value, void *ctx)
+{
+	(void)value;
+	strncat((char *)ctx, key, sizeof foreach_buf - strlen(ctx) - 2);
+	strncat((char *)ctx, ",", sizeof foreach_buf - strlen(ctx) - 2);
+}
+
+static void test_foreach_inorder(void)
+{
+	printf("test: foreach visits in sorted order\n");
+	rbtree_t *t = rb_create(NULL);
+	static const char *const keys[] = { "m", "c", "x", "a", "g", "p", "z" };
+	for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++)
+		rb_insert(t, keys[i], NULL);
+
+	foreach_buf[0] = '\0';
+	rb_foreach(t, foreach_collect, foreach_buf);
+	CHECK(strcmp(foreach_buf, "a,c,g,m,p,x,z,") == 0, "foreach did not visit in sorted order");
+
+	rb_destroy(t);
+}
+
+static void test_destroy_null_and_empty(void)
+{
+	printf("test: destroy(NULL) and destroy(empty)\n");
+	rb_destroy(NULL); /* must not crash */
+
+	rbtree_t *t = rb_create(NULL);
+	rb_destroy(t); /* empty tree, no nodes to leak */
+}
+
+/* ---------------------------------------------------------------------------
+ * M3: hardening / edge cases.
+ * ------------------------------------------------------------------------- */
+
+static void test_empty_tree_ops(void)
+{
+	printf("test: M3 empty tree\n");
+	rbtree_t *t = rb_create(NULL);
+	CHECK(rb_find(t, "x") == NULL, "find on empty tree should be NULL");
+	CHECK(rb_delete(t, "x") == -1, "delete on empty tree should be -1");
+	CHECK(rb_validate(t) == 0, "empty tree should validate");
+	CHECK(rb_size(t) == 0, "empty tree size should be 0");
+	rb_destroy(t);
+}
+
+static void test_single_node(void)
+{
+	printf("test: M3 single-node tree\n");
+	rbtree_t *t = rb_create(NULL);
+	CHECK(rb_insert(t, "only", (void *)"only") == 0, "insert failed");
+	CHECK(rb_validate(t) == 0, "single-node tree should validate");
+	CHECK(rb_size(t) == 1, "single-node size should be 1");
+	CHECK(rb_delete(t, "only") == 0, "deleting the only node should succeed");
+	CHECK(rb_size(t) == 0, "size should be 0 after deleting the only node");
+	CHECK(rb_validate(t) == 0, "tree should validate after emptying");
+	rb_destroy(t);
+}
+
+static void test_overwrite_only_key(void)
+{
+	printf("test: M3 overwrite the only key\n");
+	rbtree_t *t = rb_create(NULL);
+	static char v1[] = "v1", v2[] = "v2";
+	CHECK(rb_insert(t, "only", v1) == 0, "first insert failed");
+	CHECK(rb_insert(t, "only", v2) == 0, "overwrite failed");
+	CHECK(rb_size(t) == 1, "overwriting the only key must not change size");
+	CHECK(rb_find(t, "only") == v2, "overwrite did not take effect");
+	CHECK(rb_validate(t) == 0, "single overwritten node should validate");
+	rb_destroy(t);
+}
+
+static void test_long_key(void)
+{
+	printf("test: M3 very long key\n");
+	rbtree_t *t = rb_create(NULL);
+	static char longkey[10000];
+	memset(longkey, 'a', sizeof longkey - 1);
+	longkey[sizeof longkey - 1] = '\0';
+
+	CHECK(rb_insert(t, longkey, longkey) == 0, "insert of a 10000-byte key failed");
+	CHECK(rb_find(t, longkey) == longkey, "find of a 10000-byte key failed");
+	CHECK(rb_validate(t) == 0, "tree with a long key should validate");
+	CHECK(rb_delete(t, longkey) == 0, "delete of a 10000-byte key failed");
+	CHECK(rb_size(t) == 0, "size should be 0 after deleting the long key");
+	rb_destroy(t);
+}
+
 int main(void)
 {
+	test_insert_find();
+	test_insert_overwrite();
+	test_foreach_inorder();
+	test_destroy_null_and_empty();
+
 	static const char *const tree_a[] = { "u", "q", "s", "c", "e", "g", "i", "m", "o", "k" };
 	static const char *const tree_b[] = { "e", "q", "c", "s", "u", "o", "m", "k", "g", "i" };
 
@@ -102,6 +246,11 @@ int main(void)
 		CHECK(rb_validate(t) == 0, "tree invalid after a failed delete");
 		rb_destroy(t);
 	}
+
+	test_empty_tree_ops();
+	test_single_node();
+	test_overwrite_only_key();
+	test_long_key();
 
 	if (failures == 0) {
 		printf("test_rbtree: all cases passed\n");
