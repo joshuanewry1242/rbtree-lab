@@ -26,8 +26,14 @@ struct rbtree {
 
 rbtree_t *rb_create(rb_value_free_fn value_free)
 {
-	(void)value_free;
-	return NULL; /* TODO(M1) */
+	rbtree_t *t = malloc(sizeof *t);
+	if (t == NULL)
+		return NULL; /* allocation failed: nothing to unwind */
+
+	t->root = NULL;
+	t->size = 0;
+	t->value_free = value_free; /* may be NULL: tree does not own values */
+	return t;
 }
 
 int rb_insert(rbtree_t *t, const char *key, void *value)
