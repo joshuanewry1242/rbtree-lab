@@ -1,0 +1,28 @@
+name: battery
+
+# Runs the full three-part battery CLAUDE.md requires (test, asan, memcheck)
+# on every push. This exists because valgrind doesn't support Apple Silicon
+# macOS, so `make memcheck` has no local environment on this machine --
+# ubuntu-latest gives a real one for free.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  battery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: make test
+        run: make test
+
+      - name: make asan
+        run: make asan
+
+      - name: make memcheck
+        run: make memcheck
