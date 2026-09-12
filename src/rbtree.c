@@ -214,9 +214,16 @@ int rb_insert(rbtree_t *t, const char *key, void *value)
 
 void *rb_find(const rbtree_t *t, const char *key)
 {
-	(void)t;
-	(void)key;
-	return NULL; /* TODO(M1) */
+	struct rb_node *cur = t->root;
+
+	/* Invariant: if `key` is present, it lies in the subtree at `cur`. */
+	while (cur != NULL) {
+		int cmp = strcmp(key, cur->key);
+		if (cmp == 0)
+			return cur->value;
+		cur = (cmp < 0) ? cur->left : cur->right;
+	}
+	return NULL;
 }
 
 int rb_delete(rbtree_t *t, const char *key)
