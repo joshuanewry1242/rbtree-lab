@@ -35,6 +35,131 @@ struct rbtree {
 	size_t           size;
 };
 
+/* The entire allocation dance for one node: node, then key copy, with
+ * goto-cleanup if the second allocation fails. Colors the node RED (every
+ * new key enters red -- Section 3) and NULLs its links; caller splices it
+ * in. Returns NULL on any allocation failure with nothing left allocated. */
+static struct rb_node *node_alloc(const char *key, void *value)
+{
+	struct rb_node *n = malloc(sizeof *n);
+	if (n == NULL)
+		goto fail_node;
+
+	size_t klen = strlen(key) + 1;
+	n->key = malloc(klen);
+	if (n->key == NULL)
+		goto fail_key;
+	memcpy(n->key, key, klen);
+
+	n->value  = value;
+	n->left   = NULL;
+	n->right  = NULL;
+	n->parent = NULL;
+	n->color  = RED;
+	return n;
+
+fail_key:
+	free(n);
+fail_node:
+	return NULL;
+}
+
+/* Left-rotate around x (Figure 2). Owns updating t->root when x was the
+ * root -- the exact bookkeeping the harder-insertion figure warns about. */
+static void rotate_left(rbtree_t *t, struct rb_node *x)
+{
+	struct rb_node *y = x->right;
+
+	x->right = y->left;
+	if (y->left != NULL)
+		y->left->parent = x;
+
+	y->parent = x->parent;
+	if (x->parent == NULL)
+		t->root = y;
+	else if (x == x->parent->left)
+		x->parent->left = y;
+	else
+		x->parent->right = y;
+
+	y->left = x;
+	x->parent = y;
+}
+
+/* Mirror of rotate_left; also owns updating t->root. */
+static void rotate_right(rbtree_t *t, struct rb_node *x)
+{
+	struct rb_node *y = x->left;
+
+	x->left = y->right;
+	if (y->right != NULL)
+		y->right->parent = x;
+
+	y->parent = x->parent;
+	if (x->parent == NULL)
+		t->root = y;
+	else if (x == x->parent->right)
+		x->parent->right = y;
+	else
+		x->parent->left = y;
+
+	y->right = x;
+	x->parent = y;
+}
+
+/* Repairs the red-red violation insertion may have introduced at z.
+ * Invariant at the top of each iteration: z is red, and the only possible
+ * rule-4 breach in the whole tree is the edge z--z->parent. Case 1 pushes
+ * the violation two levels toward the root (so the climb terminates in
+ * O(log n) steps); cases 2-3 fix it in place with <=2 rotations total
+ * (Section 3, Figures 3-5). uncle == NULL is read as black, per the
+ * NULL-is-NIL representation. */
+static void insert_fixup(rbtree_t *t, struct rb_node *z)
+{
+	while (z->parent != NULL && z->parent->color == RED) {
+		if (z->parent == z->parent->parent->left) {
+			struct rb_node *uncle = z->parent->parent->right;
+
+			if (uncle != NULL && uncle->color == RED) {
+				/* Case 1: red uncle -- recolor, move up */
+				z->parent->color = BLACK;
+				uncle->color = BLACK;
+				z->parent->parent->color = RED;
+				z = z->parent->parent;
+			} else {
+				if (z == z->parent->right) {
+					/* Case 2: triangle -- rotate to a line */
+					z = z->parent;
+					rotate_left(t, z);
+				}
+				/* Case 3: line -- rotate at grandparent, swap colors */
+				z->parent->color = BLACK;
+				z->parent->parent->color = RED;
+				rotate_right(t, z->parent->parent);
+			}
+		} else {
+			/* Mirror: uncle hangs off the grandparent's left */
+			struct rb_node *uncle = z->parent->parent->left;
+
+			if (uncle != NULL && uncle->color == RED) {
+				z->parent->color = BLACK;
+				uncle->color = BLACK;
+				z->parent->parent->color = RED;
+				z = z->parent->parent;
+			} else {
+				if (z == z->parent->left) {
+					z = z->parent;
+					rotate_right(t, z);
+				}
+				z->parent->color = BLACK;
+				z->parent->parent->color = RED;
+				rotate_left(t, z->parent->parent);
+			}
+		}
+	}
+	t->root->color = BLACK; /* rule 2 */
+}
+
 rbtree_t *rb_create(rb_value_free_fn value_free)
 {
 	rbtree_t *t = malloc(sizeof *t);
@@ -68,13 +193,23 @@ int rb_insert(rbtree_t *t, const char *key, void *value)
 		cur = (cmp < 0) ? cur->left : cur->right;
 	}
 
-	/* `cur` is the empty slot: the new node becomes `parent`'s child on
-	 * the `cmp` side, or t->root when parent == NULL. */
-	/* TODO(M1): node_alloc (node + key copy, goto-cleanup); link as a RED
-	 * child; t->size++; insert_fixup(t, new_node). */
-	(void)parent;
-	(void)value;
-	return -1;
+	/* `cur` is the empty slot: link a new red node as `parent`'s child on
+	 * the `cmp` side, or as t->root when parent == NULL. */
+	struct rb_node *node = node_alloc(key, value);
+	if (node == NULL)
+		return -1; /* allocation failed: tree unchanged, value not consumed */
+
+	node->parent = parent;
+	if (parent == NULL)
+		t->root = node;
+	else if (cmp < 0)
+		parent->left = node;
+	else
+		parent->right = node;
+
+	t->size++;
+	insert_fixup(t, node);
+	return 0;
 }
 
 void *rb_find(const rbtree_t *t, const char *key)
