@@ -64,6 +64,25 @@ fail_node:
 	return NULL;
 }
 
+/* Frees just the payload a node owns: its key copy, and its value via
+ * value_free if the tree owns values. Not the node struct itself -- for
+ * a node whose struct stays alive (rb_delete's two-children hoist). */
+static void node_release_payload(struct rb_node *n, rb_value_free_fn value_free)
+{
+	free(n->key);
+	if (value_free != NULL)
+		value_free(n->value);
+}
+
+/* Frees everything one node owns: its payload, then the struct itself.
+ * Does not touch left/right/parent; callers are responsible for detaching
+ * n first. */
+static void node_release(struct rb_node *n, rb_value_free_fn value_free)
+{
+	node_release_payload(n, value_free);
+	free(n);
+}
+
 /* Left-rotate around x (Figure 2). Owns updating t->root when x was the
  * root -- the exact bookkeeping the harder-insertion figure warns about. */
 static void rotate_left(rbtree_t *t, struct rb_node *x)
@@ -363,9 +382,7 @@ int rb_delete(rbtree_t *t, const char *key)
 		 * successor is z's own right child. */
 		struct rb_node *s = tree_minimum(z->right);
 
-		free(z->key); /* old payload is about to be overwritten */
-		if (t->value_free != NULL)
-			t->value_free(z->value);
+		node_release_payload(z, t->value_free); /* old payload, z survives */
 
 		z->key   = s->key;
 		z->value = s->value;
@@ -382,10 +399,7 @@ int rb_delete(rbtree_t *t, const char *key)
 		removed_color = z->color;
 		transplant(t, z, x);
 
-		free(z->key);
-		if (t->value_free != NULL)
-			t->value_free(z->value);
-		free(z);
+		node_release(z, t->value_free); /* z itself is being destroyed */
 	}
 
 	t->size--;
@@ -466,17 +480,6 @@ int rb_validate(const rbtree_t *t)
 	if (!ok || count != t->size)
 		return -1;
 	return 0;
-}
-
-/* Frees the allocations one node owns: its key copy and, if the tree owns
- * values, its value via value_free -- then the node struct itself. Does not
- * touch left/right/parent; callers are responsible for detaching n first. */
-static void node_release(struct rb_node *n, rb_value_free_fn value_free)
-{
-	free(n->key);
-	if (value_free != NULL)
-		value_free(n->value);
-	free(n);
 }
 
 static void destroy_rec(struct rb_node *n, rb_value_free_fn value_free)
