@@ -16,7 +16,18 @@
  * requires that plumbing.
  * ------------------------------------------------------------------------- */
 
-struct rb_node; /* defined in M1 */
+typedef enum { RED, BLACK } rb_color_t;
+
+/* NIL is a NULL child, consistently treated as black. A parent pointer is
+ * kept so insert/delete fixup can climb toward the root. */
+struct rb_node {
+	char           *key;    /* heap copy; the tree owns it */
+	void           *value;  /* ownership per include/rbtree.h */
+	struct rb_node *left;
+	struct rb_node *right;
+	struct rb_node *parent;
+	rb_color_t      color;
+};
 
 struct rbtree {
 	struct rb_node  *root;
@@ -38,10 +49,32 @@ rbtree_t *rb_create(rb_value_free_fn value_free)
 
 int rb_insert(rbtree_t *t, const char *key, void *value)
 {
-	(void)t;
-	(void)key;
+	struct rb_node *parent = NULL;
+	struct rb_node *cur = t->root;
+	int cmp = 0;
+
+	/* BST descent to the insertion point.
+	 * Invariant: `parent` is the last node above `cur` on the search path;
+	 * `cur` is the subtree left to examine. */
+	while (cur != NULL) {
+		cmp = strcmp(key, cur->key);
+		if (cmp == 0) {
+			/* TODO(M1): overwrite -- free cur->value via
+			 * t->value_free (if set), install `value`, return 0. */
+			(void)value;
+			return -1;
+		}
+		parent = cur;
+		cur = (cmp < 0) ? cur->left : cur->right;
+	}
+
+	/* `cur` is the empty slot: the new node becomes `parent`'s child on
+	 * the `cmp` side, or t->root when parent == NULL. */
+	/* TODO(M1): node_alloc (node + key copy, goto-cleanup); link as a RED
+	 * child; t->size++; insert_fixup(t, new_node). */
+	(void)parent;
 	(void)value;
-	return -1; /* TODO(M1) */
+	return -1;
 }
 
 void *rb_find(const rbtree_t *t, const char *key)
