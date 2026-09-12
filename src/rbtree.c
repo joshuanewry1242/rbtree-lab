@@ -162,6 +162,7 @@ static void insert_fixup(rbtree_t *t, struct rb_node *z)
 
 rbtree_t *rb_create(rb_value_free_fn value_free)
 {
+
 	rbtree_t *t = malloc(sizeof *t);
 	if (t == NULL)
 		return NULL; /* allocation failed: nothing to unwind */
@@ -191,7 +192,9 @@ int rb_insert(rbtree_t *t, const char *key, void *value)
 		}
 		parent = cur;
 		cur = (cmp < 0) ? cur->left : cur->right;
+	
 	}
+
 
 	/* `cur` is the empty slot: link a new red node as `parent`'s child on
 	 * the `cmp` side, or as t->root when parent == NULL. */
@@ -226,15 +229,170 @@ void *rb_find(const rbtree_t *t, const char *key)
 	return NULL;
 }
 
+/* Replaces the subtree at u with the subtree at v (v may be NULL): fixes
+ * u->parent's child pointer, and v->parent when v is non-NULL. Does not
+ * touch u's own fields -- callers extract whatever they need from u first. */
+static void transplant(rbtree_t *t, struct rb_node *u, struct rb_node *v)
+{
+	if (u->parent == NULL)
+		t->root = v;
+	else if (u == u->parent->left)
+		u->parent->left = v;
+	else
+		u->parent->right = v;
+
+	if (v != NULL)
+		v->parent = u->parent;
+}
+
+/* The leftmost node of the subtree at n: the in-order successor's start
+ * point when n is some node's right child. */
+static struct rb_node *tree_minimum(struct rb_node *n)
+{
+	while (n->left != NULL)
+		n = n->left;
+	return n;
+}
+
+/* Repairs the doubly-black debt left behind at the (parent, x) slot after
+ * a black node was removed. x may be NULL, so parent is tracked explicitly
+ * rather than read off x->parent. Invariant at the top of each iteration:
+ * every path through x is one black short of every other path in the tree;
+ * case 2 pushes that debt up toward the root (parent = x->parent is safe
+ * there because x has just been set to the old, definitely non-NULL,
+ * parent); cases 1/3/4 settle it in place with <=3 rotations total
+ * (Section 3, "Keep the two repairs straight"). */
+static void delete_fixup(rbtree_t *t, struct rb_node *parent, struct rb_node *x)
+{
+	while (x != t->root && (x == NULL || x->color == BLACK)) {
+		if (x == parent->left) {
+			struct rb_node *sib = parent->right;
+
+			if (sib->color == RED) {
+				/* Case 1: red sibling -- rotate to reach a black one */
+				sib->color = BLACK;
+				parent->color = RED;
+				rotate_left(t, parent);
+				sib = parent->right;
+			}
+			if ((sib->left == NULL || sib->left->color == BLACK) &&
+			    (sib->right == NULL || sib->right->color == BLACK)) {
+				/* Case 2: both nephews black -- recolor, move debt up */
+				sib->color = RED;
+				x = parent;
+				parent = x->parent;
+			} else {
+				if (sib->right == NULL || sib->right->color == BLACK) {
+					/* Case 3: near nephew red -- rotate it into place */
+					if (sib->left != NULL)
+						sib->left->color = BLACK;
+					sib->color = RED;
+					rotate_right(t, sib);
+					sib = parent->right;
+				}
+				/* Case 4: far nephew red -- settle the debt, done */
+				sib->color = parent->color;
+				parent->color = BLACK;
+				if (sib->right != NULL)
+					sib->right->color = BLACK;
+				rotate_left(t, parent);
+				x = t->root;
+			}
+		} else {
+			/* Mirror: x hangs off parent's right */
+			struct rb_node *sib = parent->left;
+
+			if (sib->color == RED) {
+				sib->color = BLACK;
+				parent->color = RED;
+				rotate_right(t, parent);
+				sib = parent->left;
+			}
+			if ((sib->right == NULL || sib->right->color == BLACK) &&
+			    (sib->left == NULL || sib->left->color == BLACK)) {
+				sib->color = RED;
+				x = parent;
+				parent = x->parent;
+			} else {
+				if (sib->left == NULL || sib->left->color == BLACK) {
+					if (sib->right != NULL)
+						sib->right->color = BLACK;
+					sib->color = RED;
+					rotate_left(t, sib);
+					sib = parent->left;
+				}
+				sib->color = parent->color;
+				parent->color = BLACK;
+				if (sib->left != NULL)
+					sib->left->color = BLACK;
+				rotate_right(t, parent);
+				x = t->root;
+			}
+		}
+	}
+	if (x != NULL)
+		x->color = BLACK;
+}
+
 int rb_delete(rbtree_t *t, const char *key)
 {
-	(void)t;
-	(void)key;
-	return -1; /* TODO(M2) */
+	struct rb_node *z = t->root;
+
+	/* Same descent shape as rb_find. */
+	while (z != NULL) {
+		int cmp = strcmp(key, z->key);
+		if (cmp == 0)
+			break;
+		z = (cmp < 0) ? z->left : z->right;
+	}
+	if (z == NULL)
+		return -1; /* absent: tree unchanged */
+
+	struct rb_node *fixup_parent;
+	struct rb_node *x;
+	rb_color_t      removed_color;
+
+	if (z->left != NULL && z->right != NULL) {
+		/* Two children: hoist the in-order successor's payload into z,
+		 * then physically unlink the successor instead of z. Because
+		 * z never moves, this needs no special case even when the
+		 * successor is z's own right child. */
+		struct rb_node *s = tree_minimum(z->right);
+
+		free(z->key); /* old payload is about to be overwritten */
+		if (t->value_free != NULL)
+			t->value_free(z->value);
+
+		z->key   = s->key;
+		z->value = s->value;
+
+		removed_color = s->color;
+		fixup_parent  = s->parent;
+		x             = s->right;
+		transplant(t, s, s->right);
+		free(s); /* struct only -- key/value now belong to z */
+	} else {
+		/* Zero or one child: z itself is physically unlinked. */
+		x             = (z->left != NULL) ? z->left : z->right;
+		fixup_parent  = z->parent;
+		removed_color = z->color;
+		transplant(t, z, x);
+
+		free(z->key);
+		if (t->value_free != NULL)
+			t->value_free(z->value);
+		free(z);
+	}
+
+	t->size--;
+	if (removed_color == BLACK)
+		delete_fixup(t, fixup_parent, x);
+	return 0;
 }
 
 size_t rb_size(const rbtree_t *t)
 {
+	
 	return t->size;
 }
 
