@@ -361,7 +361,8 @@ int rb_delete(rbtree_t *t, const char *key)
 {
 	struct rb_node *z = t->root;
 
-	/* Same descent shape as rb_find. */
+	/* Invariant: if key is present, it lies in the subtree at z (same
+	 * shape as rb_find's descent). */
 	while (z != NULL) {
 		int cmp = strcmp(key, z->key);
 		if (cmp == 0)
