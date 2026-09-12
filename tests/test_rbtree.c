@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The Reach (Section 10): not part of the public API, so not declared in
+ * include/rbtree.h (frozen). Forward-declared here so this file can reach
+ * it directly, per the companion's "behind a second function" suggestion. */
+extern void rb_destroy_reach(rbtree_t *t);
+
 /* M1 unit tests, M2's table-driven rb_delete cases (written before
  * rb_delete existed -- workflow Step 4 -- so they failed red first), and
  * M3 hardening/edge cases, in that order. The delete-case fixture trees
@@ -153,6 +158,30 @@ static void test_destroy_null_and_empty(void)
 	rb_destroy(t); /* empty tree, no nodes to leak */
 }
 
+/* The Reach: same coverage rb_destroy already gets (a real tree, shaped
+ * by both inserts and deletes so it isn't just a straight spine already),
+ * torn down with rb_destroy_reach instead. Nothing here checks the
+ * rotation logic directly -- ASan is the oracle: if destroy_spine ever
+ * drops a node's left subtree instead of rotating it up, that subtree
+ * leaks, and make asan catches it. */
+static void test_destroy_reach(void)
+{
+	printf("test: the Reach (stack-free teardown)\n");
+	rbtree_t *t = rb_create(NULL);
+	static const char *const keys[] = { "u", "q", "s", "c", "e", "g", "i", "m", "o", "k" };
+	for (size_t i = 0; i < 10; i++)
+		rb_insert(t, keys[i], (void *)keys[i]);
+	rb_delete(t, "u");
+	rb_delete(t, "m");
+	rb_insert(t, "z", (void *)"z"); /* re-inserted after a delete, on purpose */
+
+	rb_destroy_reach(t);
+
+	/* empty tree through the same path */
+	rbtree_t *empty = rb_create(NULL);
+	rb_destroy_reach(empty);
+}
+
 /* ---------------------------------------------------------------------------
  * M3: hardening / edge cases.
  * ------------------------------------------------------------------------- */
@@ -216,6 +245,7 @@ int main(void)
 	test_insert_overwrite();
 	test_foreach_inorder();
 	test_destroy_null_and_empty();
+	test_destroy_reach();
 
 	static const char *const tree_a[] = { "u", "q", "s", "c", "e", "g", "i", "m", "o", "k" };
 	static const char *const tree_b[] = { "e", "q", "c", "s", "u", "o", "m", "k", "g", "i" };
