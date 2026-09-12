@@ -14,7 +14,12 @@
 #define N   500
 #define SEED 20260910u
 
-static char keys[N][8];
+/* 16, not the ~6 bytes "f0499\0" actually needs: GCC's -Wformat-truncation
+ * (part of -Wextra, but not something Apple clang flags the same way,
+ * which is why this only showed up in CI) reasons about i's *declared*
+ * type (plain int, full range) rather than the loop's actual bound, and
+ * wants room for the worst case -- up to 11 digits/sign for INT_MIN. */
+static char keys[N][16];
 
 static void die(const char *why, long op, int i)
 {
