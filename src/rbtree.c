@@ -235,8 +235,7 @@ int rb_delete(rbtree_t *t, const char *key)
 
 size_t rb_size(const rbtree_t *t)
 {
-	(void)t;
-	return 0; /* TODO(M1) */
+	return t->size;
 }
 
 void rb_foreach(const rbtree_t *t,
@@ -249,14 +248,81 @@ void rb_foreach(const rbtree_t *t,
 	/* TODO(M1) */
 }
 
+/* In-order walk that checks rules 4 and 5 together and counts nodes.
+ * Returns the black-height of the subtree at n (NIL counts as black, so an
+ * empty subtree is height 1); clears *ok the first time any rule breaks,
+ * but keeps walking so the rest of the tree -- ordering included -- is
+ * still checked. *prev is the previously-visited (in-order) node, so keys
+ * can be compared as strictly increasing. */
+static int validate_rec(const struct rb_node *n, const struct rb_node **prev,
+                         size_t *count, int *ok)
+{
+	int lh, rh;
+
+	if (n == NULL)
+		return 1;
+
+	lh = validate_rec(n->left, prev, count, ok);
+
+	if (n->color == RED &&
+	    ((n->left  != NULL && n->left->color  == RED) ||
+	     (n->right != NULL && n->right->color == RED)))
+		*ok = 0; /* rule 4: a red node has a red child */
+
+	if (*prev != NULL && strcmp((*prev)->key, n->key) >= 0)
+		*ok = 0; /* keys must be strictly increasing in-order */
+	*prev = n;
+	(*count)++;
+
+	rh = validate_rec(n->right, prev, count, ok);
+
+	if (lh != rh)
+		*ok = 0; /* rule 5: black-height mismatch */
+
+	return (n->color == BLACK) + lh;
+}
+
 int rb_validate(const rbtree_t *t)
 {
-	(void)t;
-	return -1; /* TODO(M1) */
+	const struct rb_node *prev = NULL;
+	size_t count = 0;
+	int ok = 1;
+
+	if (t->root != NULL && t->root->color != BLACK)
+		return -1; /* rule 2: root must be black */
+
+	validate_rec(t->root, &prev, &count, &ok);
+
+	if (!ok || count != t->size)
+		return -1;
+	return 0;
+}
+
+/* Frees the allocations one node owns: its key copy and, if the tree owns
+ * values, its value via value_free -- then the node struct itself. Does not
+ * touch left/right/parent; callers are responsible for detaching n first. */
+static void node_release(struct rb_node *n, rb_value_free_fn value_free)
+{
+	free(n->key);
+	if (value_free != NULL)
+		value_free(n->value);
+	free(n);
+}
+
+static void destroy_rec(struct rb_node *n, rb_value_free_fn value_free)
+{
+	if (n == NULL)
+		return;
+	destroy_rec(n->left, value_free);
+	destroy_rec(n->right, value_free);
+	node_release(n, value_free);
 }
 
 void rb_destroy(rbtree_t *t)
 {
-	(void)t;
-	/* TODO(M1) */
+	if (t == NULL)
+		return; /* NULL-safe per include/rbtree.h */
+
+	destroy_rec(t->root, t->value_free);
+	free(t);
 }
