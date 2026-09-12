@@ -185,10 +185,14 @@ int rb_insert(rbtree_t *t, const char *key, void *value)
 	while (cur != NULL) {
 		cmp = strcmp(key, cur->key);
 		if (cmp == 0) {
-			/* TODO(M1): overwrite -- free cur->value via
-			 * t->value_free (if set), install `value`, return 0. */
-			(void)value;
-			return -1;
+			/* Overwrite: the tree is the old value's only remaining
+			 * owner, so it frees it before installing the new one.
+			 * Key and topology are already correct -- nothing else
+			 * to touch. */
+			if (t->value_free != NULL)
+				t->value_free(cur->value);
+			cur->value = value;
+			return 0;
 		}
 		parent = cur;
 		cur = (cmp < 0) ? cur->left : cur->right;
