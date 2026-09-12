@@ -238,14 +238,22 @@ size_t rb_size(const rbtree_t *t)
 	return t->size;
 }
 
+static void foreach_rec(const struct rb_node *n,
+                         void (*fn)(const char *key, void *value, void *ctx),
+                         void *ctx)
+{
+	if (n == NULL)
+		return;
+	foreach_rec(n->left, fn, ctx);
+	fn(n->key, n->value, ctx);
+	foreach_rec(n->right, fn, ctx);
+}
+
 void rb_foreach(const rbtree_t *t,
                 void (*fn)(const char *key, void *value, void *ctx),
                 void *ctx)
 {
-	(void)t;
-	(void)fn;
-	(void)ctx;
-	/* TODO(M1) */
+	foreach_rec(t->root, fn, ctx);
 }
 
 /* In-order walk that checks rules 4 and 5 together and counts nodes.
