@@ -9,6 +9,9 @@ typedef void (*rb_value_free_fn)(void *value);
  * value_free may be NULL (values not owned). */
 rbtree_t *rb_create(rb_value_free_fn value_free);
 
+/* Mutation 2: node storage drawn from an internal slab pool. */
+rbtree_t *rb_create_pooled(rb_value_free_fn value_free);
+
 /* Copies key (tree owns the copy).
  * Takes ownership of value ONLY on success.
  * Overwriting an existing key frees the old value via value_free.
@@ -25,7 +28,7 @@ int rb_delete(rbtree_t *t, const char *key);
 
 size_t rb_size(const rbtree_t *t);
 
-/* In-order traversal. */
+/* In-order. Mutation 3: O(1) auxiliary space, no recursion. */
 void rb_foreach(const rbtree_t *t,
                 void (*fn)(const char *key, void *value, void *ctx),
                 void *ctx);
@@ -34,7 +37,12 @@ void rb_foreach(const rbtree_t *t,
  * (see the baseline section). */
 int rb_validate(const rbtree_t *t);
 
-/* Frees all nodes, key copies, and (if owned) values. NULL-safe. */
+/* Frees all nodes, key copies, and (if owned) values.
+ * Mutation 3: O(1) auxiliary space, no recursion. NULL-safe. */
 void rb_destroy(rbtree_t *t);
+
+/* Mutation 4 (The Reach): O(1) copy-on-write snapshot.
+ * NULL on alloc failure. */
+rbtree_t *rb_snapshot(rbtree_t *t);
 
 #endif

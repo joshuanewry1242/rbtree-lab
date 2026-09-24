@@ -28,6 +28,8 @@ fi
 count=0
 for f in "$src"/*.jsonl; do
 	[ -e "$f" ] || continue
+	# Assignment 1 sessions are archived in docs/a1/logs; keep them out of A2's logs/.
+	[ -e "$repo/docs/a1/logs/$(basename "$f")" ] && continue
 	cp "$f" "$dst/"
 	count=$((count + 1))
 done
