@@ -8,5 +8,5 @@ It explains every decision and every response it has.
 - Where the agent was least reliable:
 The agent was least reliable in making a correct and just because i asked a question it edits its correction which leads to the confuision if ever got the right answer.
 - One bug it introduced that I caught, and how:
-One bug it introduce is the children arguing , and me understanding why they it argued and how to fix and also how to put it from left to right.
+One bug it introduce was with rb_destroy and how to validate it  , and me understanding why they it was not working  and how to fix and also how to put it from left to right.
 - The thing about C is that string isn’t really its own object with built in behaviors. It’s basically just a collection of bytes, and things like its length or how it compares to other strings are rules that I have to manage myself instead of the language handling them for me.
