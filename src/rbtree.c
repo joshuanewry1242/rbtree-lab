@@ -1,19 +1,14 @@
 #include "rbtree.h"
 
+#include "fault_alloc.h"
+
 #include <stdlib.h>
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
- * M0 SKELETON. Nothing here is implemented yet.
- *
- * M1: define struct rb_node, then rb_create / rb_insert (+ fixup) / rb_find /
- *     rb_foreach / rb_validate / rb_size / rb_destroy.
- * M2: rb_delete with every deletion-fixup case + the fuzzer.
- * M3: hardening, edge cases, final clean sweep.
- *
- * Consider routing all allocation through rb_malloc / rb_free wrappers now
- * (Section 9, "A tip you may thank yourself for") -- the next assignment
- * requires that plumbing.
+ * Assignment 2: the logical tree is unchanged from A1. All heap allocation
+ * goes through rb_malloc / rb_free (tests/fault_alloc.h) -- the seam the
+ * fault injector (M1) and the slab pool (M2) sit behind.
  * ------------------------------------------------------------------------- */
 
 typedef enum { RED, BLACK } rb_color_t;
@@ -41,12 +36,12 @@ struct rbtree {
  * in. Returns NULL on any allocation failure with nothing left allocated. */
 static struct rb_node *node_alloc(const char *key, void *value)
 {
-	struct rb_node *n = malloc(sizeof *n);
+	struct rb_node *n = rb_malloc(sizeof *n);
 	if (n == NULL)
 		goto fail_node;
 
 	size_t klen = strlen(key) + 1;
-	n->key = malloc(klen);
+	n->key = rb_malloc(klen);
 	if (n->key == NULL)
 		goto fail_key;
 	memcpy(n->key, key, klen);
@@ -59,7 +54,7 @@ static struct rb_node *node_alloc(const char *key, void *value)
 	return n;
 
 fail_key:
-	free(n);
+	rb_free(n);
 fail_node:
 	return NULL;
 }
@@ -69,7 +64,7 @@ fail_node:
  * a node whose struct stays alive (rb_delete's two-children hoist). */
 static void node_release_payload(struct rb_node *n, rb_value_free_fn value_free)
 {
-	free(n->key);
+	rb_free(n->key);
 	if (value_free != NULL)
 		value_free(n->value);
 }
@@ -80,7 +75,7 @@ static void node_release_payload(struct rb_node *n, rb_value_free_fn value_free)
 static void node_release(struct rb_node *n, rb_value_free_fn value_free)
 {
 	node_release_payload(n, value_free);
-	free(n);
+	rb_free(n);
 }
 
 /* Left-rotate around x (Figure 2). Owns updating t->root when x was the
@@ -182,7 +177,7 @@ static void insert_fixup(rbtree_t *t, struct rb_node *z)
 rbtree_t *rb_create(rb_value_free_fn value_free)
 {
 
-	rbtree_t *t = malloc(sizeof *t);
+	rbtree_t *t = rb_malloc(sizeof *t);
 	if (t == NULL)
 		return NULL; /* allocation failed: nothing to unwind */
 
@@ -392,7 +387,7 @@ int rb_delete(rbtree_t *t, const char *key)
 		fixup_parent  = s->parent;
 		x             = s->right;
 		transplant(t, s, s->right);
-		free(s); /* struct only -- key/value now belong to z */
+		rb_free(s); /* struct only -- key/value now belong to z */
 	} else {
 		/* Zero or one child: z itself is physically unlinked. */
 		x             = (z->left != NULL) ? z->left : z->right;
@@ -498,7 +493,7 @@ void rb_destroy(rbtree_t *t)
 		return; /* NULL-safe per include/rbtree.h */
 
 	destroy_rec(t->root, t->value_free);
-	free(t);
+	rb_free(t);
 }
 
 /* The Reach (Section 10): tears down n in O(1) auxiliary space and no
@@ -531,5 +526,5 @@ void rb_destroy_reach(rbtree_t *t)
 		return;
 
 	destroy_spine(t->root, t->value_free);
-	free(t);
+	rb_free(t);
 }
