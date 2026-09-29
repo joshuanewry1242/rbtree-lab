@@ -1,5 +1,7 @@
 #include "rbtree.h"
 
+#include "fault_alloc.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -239,6 +241,128 @@ static void test_long_key(void)
 	rb_destroy(t);
 }
 
+/* ---------------------------------------------------------------------------
+ * A2 M1: allocation-failure sweeps via the fault injector.
+ * ------------------------------------------------------------------------- */
+
+static const char *const fault_keys[] = { "u", "q", "s", "c", "e", "g", "i", "m", "o", "k" };
+#define FAULT_NKEYS (sizeof fault_keys / sizeof fault_keys[0])
+
+/* In-order key list, copied out so it can be compared across a failed call. */
+struct key_snap {
+	char   keys[FAULT_NKEYS + 1][8];
+	size_t n;
+};
+
+static void snap_cb(const char *key, void *value, void *ctx)
+{
+	(void)value;
+	struct key_snap *s = ctx;
+	if (s->n < FAULT_NKEYS + 1)
+		snprintf(s->keys[s->n], sizeof s->keys[0], "%s", key);
+	s->n++;
+}
+
+static int snap_equal(const struct key_snap *a, const struct key_snap *b)
+{
+	if (a->n != b->n)
+		return 0;
+	for (size_t i = 0; i < a->n; i++)
+		if (strcmp(a->keys[i], b->keys[i]) != 0)
+			return 0;
+	return 1;
+}
+
+/* Tree that owns heap values, so a leaked or double-freed value shows up
+ * under asan / leaks. Built with the injector disarmed. */
+static rbtree_t *build_owned_tree(void)
+{
+	rbtree_t *t = rb_create(free);
+	for (size_t i = 0; i < FAULT_NKEYS; i++) {
+		char *v = strdup(fault_keys[i]);
+		if (rb_insert(t, fault_keys[i], v) != 0) {
+			printf("  setup FAILED: rb_insert(\"%s\") rejected\n", fault_keys[i]);
+			failures++;
+			free(v);
+		}
+	}
+	return t;
+}
+
+static void test_fault_create(void)
+{
+	printf("test: M1 rb_create under allocation failure\n");
+	fault_alloc_arm(1);
+	rbtree_t *t = rb_create(NULL);
+	int fired = fault_alloc_fired();
+	fault_alloc_disarm();
+	CHECK(fired, "armed fault did not fire during rb_create");
+	CHECK(t == NULL, "rb_create did not return NULL on allocation failure");
+	rb_destroy(t);
+}
+
+static void test_fault_insert_sweep(void)
+{
+	printf("test: M1 rb_insert fault sweep\n");
+	int failed_iters = 0;
+
+	/* Invariant: at iteration n, allocations 1..n-1 of the insert succeed
+	 * and the n-th fails; the loop ends on the first n that never fires. */
+	for (long n = 1;; n++) {
+		rbtree_t       *t = build_owned_tree();
+		struct key_snap before = { 0 };
+		rb_foreach(t, snap_cb, &before);
+		size_t size_before = rb_size(t);
+
+		char *v = strdup("new");
+		fault_alloc_arm(n);
+		int rc    = rb_insert(t, "new", v);
+		int fired = fault_alloc_fired();
+		fault_alloc_disarm();
+
+		if (!fired) {
+			CHECK(rc == 0, "rb_insert failed with no fault injected");
+			CHECK(rb_find(t, "new") == v, "inserted key not findable");
+			CHECK(rb_validate(t) == 0, "tree invalid after successful insert");
+			rb_destroy(t);
+			break;
+		}
+
+		failed_iters++;
+		struct key_snap after = { 0 };
+		rb_foreach(t, snap_cb, &after);
+		CHECK(rc == -1, "rb_insert did not return -1 on allocation failure");
+		CHECK(rb_size(t) == size_before, "size changed after failed insert");
+		CHECK(snap_equal(&before, &after), "keys changed after failed insert");
+		CHECK(rb_validate(t) == 0, "tree invalid after failed insert");
+		CHECK(rb_find(t, "new") == NULL, "failed insert left the key findable");
+		free(v); /* caller still owns it: double free here if the tree consumed it */
+		rb_destroy(t);
+	}
+
+	CHECK(failed_iters >= 2, "sweep covered fewer than 2 failure points (node + key)");
+}
+
+static void test_fault_no_alloc_paths(void)
+{
+	printf("test: M1 overwrite and delete do not allocate\n");
+	rbtree_t *t = build_owned_tree();
+
+	fault_alloc_arm(1);
+	int rc_over = rb_insert(t, "m", strdup("m2"));
+	int rc_del  = rb_delete(t, "q");
+	int fired   = fault_alloc_fired();
+	fault_alloc_disarm();
+
+	CHECK(!fired, "overwrite or delete performed an allocation");
+	CHECK(rc_over == 0, "overwrite rb_insert failed");
+	CHECK(rc_del == 0, "rb_delete failed");
+	CHECK(rb_find(t, "m") != NULL && strcmp(rb_find(t, "m"), "m2") == 0,
+	      "overwrite did not install the new value");
+	CHECK(rb_validate(t) == 0, "tree invalid after overwrite + delete");
+	rb_destroy(t);
+}
+
 int main(void)
 {
 	test_insert_find();
@@ -281,6 +405,9 @@ int main(void)
 	test_single_node();
 	test_overwrite_only_key();
 	test_long_key();
+	test_fault_create();
+	test_fault_insert_sweep();
+	test_fault_no_alloc_paths();
 
 	if (failures == 0) {
 		printf("test_rbtree: all cases passed\n");
