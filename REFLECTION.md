@@ -34,10 +34,10 @@ right rotation that removes one left link from the remaining tree, so (nodes
 remaining, left links remaining) strictly decreases lexicographically. For a
 pooled tree each node is still returned with pool_free, then pool_destroy frees
 the slabs.
-**rb_foreach:** in-order walk using the parent pointers. Go to the leftmost node;
-after visiting n, descend to the leftmost node of n's right subtree if there is
-one, otherwise climb until arriving from a left child. O(1) space, read-only (no
-temporary re-linking as in Morris traversal). Callback contract: fn must not
+**rb_foreach:** in-order walk, read-only (no temporary re-linking as in Morris
+traversal). M3 used the parent pointers; M4a removed them (shared nodes can't
+have one parent), so each step now finds the successor by a fresh search from
+the root: O(1) space, O(n log n) time. Callback contract: fn must not
 insert into or delete from the tree during the walk.
 **Scale:** the 10^6-node build/foreach/destroy tests run at full size under
 `make test`, `make asan` and `make leaks`. Under valgrind in CI (`make memcheck`)

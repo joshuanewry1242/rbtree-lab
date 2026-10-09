@@ -81,3 +81,16 @@ DID: reviewed M3 decisions with the plan-mode pushback option. Kept parent-point
 LEARNED: I committed M3 right after "approve" with no room to push back; ask for
   an explicit go-ahead on the committed-vs-reviewed distinction next time.
 NEXT FIRST STEP: /code-review on the M3 diff (PROMPTLOG review-finding episode).
+
+## 2026-10-09 (week 2: M4a)
+STATE: M4a done: parent pointers removed. make test, asan, leaks green.
+DID: rotations take the node's parent explicitly (replace_child); insert_fixup and
+  delete_fixup run on an on-stack path array (RB_MAX_DEPTH 128); transplant reduced
+  to replace_child; tree_minimum folded into rb_delete; rb_foreach is now a
+  successor search from the root (O(1) space, O(n log n) time).
+DECIDED: foreach goes from parent walk to successor search because the approved
+  M4 path-copying plan needs nodes with several parents. Insert case 2 / delete
+  case 1 swap/shift path entries to keep the path right after a rotation.
+NEXT FIRST STEP: M4b plan check-in: refs on nodes, payload split (key + value
+  refcounted), refcount-aware destroy_spine, pool refcount. No snapshots yet.
+OPEN: PROMPTLOG episodes 4-5 are factual drafts for you to edit.
