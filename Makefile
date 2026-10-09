@@ -4,6 +4,8 @@ SRC      := src/rbtree.c src/pool.c
 TSRC     := tests/test_rbtree.c tests/fault_alloc.c
 BIN      := build/test_rbtree
 FUZZBIN  := build/fuzz
+# node count for the big M3 tests under valgrind (full size is 10^6)
+BIG_N    ?= 20000
 
 all: $(BIN) $(FUZZBIN)
 
@@ -25,7 +27,7 @@ asan: clean test
 # valgrind does not run on Apple Silicon macOS; this target runs in CI
 # (.github/workflows/battery.yml, gcc:14 container).
 memcheck: clean all
-	RB_BIG_N=20000 valgrind --leak-check=full --show-leak-kinds=all \
+	RB_BIG_N=$(BIG_N) valgrind --leak-check=full --show-leak-kinds=all \
 		--error-exitcode=1 ./$(BIN)
 	valgrind --leak-check=full --show-leak-kinds=all \
 		--error-exitcode=1 ./$(FUZZBIN) 20000

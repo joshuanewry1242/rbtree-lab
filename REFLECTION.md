@@ -42,7 +42,8 @@ insert into or delete from the tree during the walk.
 **Scale:** the 10^6-node build/foreach/destroy tests run at full size under
 `make test`, `make asan` and `make leaks`. Under valgrind in CI (`make memcheck`)
 the Makefile sets RB_BIG_N=20000 for the unit-test binary, so the 10^6 case does
-not run there. validate_rec (rb_validate) is still recursive; it is outside this
+not run there. The scale is the Makefile variable `BIG_N` (default 20000;
+`make memcheck BIG_N=100000` to tune). validate_rec (rb_validate) is still recursive; it is outside this
 mutation's scope and its depth is O(log n).
 
 ## Where the agent was most and least reliable

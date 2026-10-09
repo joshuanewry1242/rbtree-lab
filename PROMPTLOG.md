@@ -4,7 +4,7 @@
 (accepted / rejected / pushed back, and why), tied to a commit, test, or diff.
 
 Required episodes (check off as they happen):
-- [ ] A plan I revised (Step 3)
+- [x] A plan I revised (Step 3)
 - [x] A rejected / oversized diff (Step 4)
 - [ ] A tool-output debugging loop (Step 5)
 - [ ] A review finding I triaged: one real, one false positive (Step 7)
@@ -53,3 +53,19 @@ explained they were required checks and I approved them. All green: make test,
 make asan, make leaks (0 leaks).
 **Evidence:** tests/test_rbtree.c test_pool_*, test_pooled_*; tests/fuzz.c run()
 plain + pooled; src/pool.c; src/rbtree.c node_struct_alloc
+
+## Episode 3: M3 plan revised after the work was already committed (M3)
+**Prompt:** "i approve" on the M3 plan, then "lets make a plan on m3 and give me
+an option so i can push back".
+**What came back:** The agent implemented and committed M3 (96558d2) straight
+after "i approve", leaving no point to push back. When asked, it re-entered plan
+mode, listed the M3 decisions (parent-pointer vs Morris foreach, keeping
+rb_destroy_reach, valgrind scale-down, 10^6 tests in default make test), and
+offered accept / revise / redo.
+**My judgment:** Chose "revise with follow-ups". Pushed back on the hard-coded
+valgrind scale and asked for a separate knob; kept the parent-pointer foreach
+over Morris (a Morris callback would see a rewired tree); kept the other
+decisions. The agent found that RB_BIG_N was already separate for the big tests,
+so the real change was making the value a Makefile variable (BIG_N).
+**Evidence:** Makefile BIG_N; commit "M3: BIG_N knob for the valgrind scale";
+96558d2 for the original M3 diff

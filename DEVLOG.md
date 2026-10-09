@@ -73,3 +73,11 @@ OPEN: rb_validate is still recursive (depth O(log n)). rb_destroy_reach could be
   removed. Poisoning (0xDD) in REFLECTION still unimplemented. M3 diff is a good
   candidate for the /code-review episode in PROMPTLOG.
 NEXT FIRST STEP: /code-review on the M3 diff, triage findings (PROMPTLOG episode).
+
+## 2026-10-08 (week 2: M3 follow-up)
+DID: reviewed M3 decisions with the plan-mode pushback option. Kept parent-pointer
+  foreach (Morris would expose a rewired tree to callbacks), kept rb_destroy_reach,
+  kept 10^6 tests in make test. Made the valgrind scale a Makefile variable BIG_N.
+LEARNED: I committed M3 right after "approve" with no room to push back; ask for
+  an explicit go-ahead on the committed-vs-reviewed distinction next time.
+NEXT FIRST STEP: /code-review on the M3 diff (PROMPTLOG review-finding episode).
