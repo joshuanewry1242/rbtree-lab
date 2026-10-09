@@ -62,3 +62,14 @@ NEXT FIRST STEP: M3 plan: iterative rb_destroy (wire in destroy_spine) and
   O(1)-space rb_foreach via parent pointers.
 OPEN: REFLECTION poisoning section (0xDD on free) is not implemented; check the
   spec for whether M2 requires it. destroy_rec still recursive until M3.
+
+## 2026-10-08 (week 2: M3)
+STATE: M3 done and committed. make test, asan, leaks green; 10^6-node tests run in ~1s locally.
+DID: rb_destroy now uses destroy_spine; destroy_rec and foreach_rec removed;
+  rb_foreach is an iterative parent-pointer walk; 10^6-node plain + pooled tests
+  (order check + destroy); RB_BIG_N override, set to 20000 in make memcheck.
+DECIDED: kept rb_destroy_reach (still tested; duplicates rb_destroy now).
+OPEN: rb_validate is still recursive (depth O(log n)). rb_destroy_reach could be
+  removed. Poisoning (0xDD) in REFLECTION still unimplemented. M3 diff is a good
+  candidate for the /code-review episode in PROMPTLOG.
+NEXT FIRST STEP: /code-review on the M3 diff, triage findings (PROMPTLOG episode).

@@ -445,22 +445,34 @@ size_t rb_size(const rbtree_t *t)
 	return t->size;
 }
 
-static void foreach_rec(const struct rb_node *n,
-                         void (*fn)(const char *key, void *value, void *ctx),
-                         void *ctx)
-{
-	if (n == NULL)
-		return;
-	foreach_rec(n->left, fn, ctx);
-	fn(n->key, n->value, ctx);
-	foreach_rec(n->right, fn, ctx);
-}
-
+/* In-order walk in O(1) space via parent pointers: no recursion, no stack.
+ * `fn` must not insert or delete during the walk. */
 void rb_foreach(const rbtree_t *t,
                 void (*fn)(const char *key, void *value, void *ctx),
                 void *ctx)
 {
-	foreach_rec(t->root, fn, ctx);
+	const struct rb_node *n = t->root;
+	while (n != NULL && n->left != NULL)
+		n = n->left;
+
+	/* Invariant: every node before n in key order has been visited, none
+	 * after; n is the next to visit. */
+	while (n != NULL) {
+		fn(n->key, n->value, ctx);
+		if (n->right != NULL) {
+			n = n->right;
+			while (n->left != NULL)
+				n = n->left;
+		} else {
+			/* Climb until we arrive from a left child: that parent is next. */
+			const struct rb_node *child = n;
+			n = n->parent;
+			while (n != NULL && n->right == child) {
+				child = n;
+				n = n->parent;
+			}
+		}
+	}
 }
 
 /* In-order walk that checks rules 4 and 5 together and counts nodes.
@@ -513,25 +525,6 @@ int rb_validate(const rbtree_t *t)
 	return 0;
 }
 
-static void destroy_rec(rbtree_t *t, struct rb_node *n)
-{
-	if (n == NULL)
-		return;
-	destroy_rec(t, n->left);
-	destroy_rec(t, n->right);
-	node_release(t, n);
-}
-
-void rb_destroy(rbtree_t *t)
-{
-	if (t == NULL)
-		return; /* NULL-safe per include/rbtree.h */
-
-	destroy_rec(t, t->root);
-	pool_destroy(t->pool); /* NULL-safe */
-	rb_free(t);
-}
-
 /* The Reach (Section 10): tears down n in O(1) auxiliary space and no
  * recursion by rotating every node onto a right spine as it's freed
  * instead of stacking unvisited left subtrees. Invariant: everything left
@@ -550,6 +543,16 @@ static void destroy_spine(rbtree_t *t, struct rb_node *n)
 			n = l;
 		}
 	}
+}
+
+void rb_destroy(rbtree_t *t)
+{
+	if (t == NULL)
+		return; /* NULL-safe per include/rbtree.h */
+
+	destroy_spine(t, t->root);
+	pool_destroy(t->pool); /* NULL-safe */
+	rb_free(t);
 }
 
 /* Not part of the public API (include/rbtree.h is frozen) -- has external

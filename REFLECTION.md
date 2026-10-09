@@ -27,8 +27,23 @@ The cost of in-band placement is that the header takes a few bytes off each slab
 <!-- 0xDD on free: what bug class it catches that ASan no longer can; poison vs free-list link ordering -->
 
 ## Mutation 3 notes
-<!-- teardown technique and its termination measure; rb_foreach technique and callback contract;
-     state honestly if the 10^6-node case runs smaller anywhere (e.g., under valgrind) -->
+**Teardown:** rb_destroy calls destroy_spine, which rotates each left child up
+onto a right spine and frees nodes as it goes: O(1) space, no recursion, no heap
+stack. Termination measure: every loop step either frees one node or does one
+right rotation that removes one left link from the remaining tree, so (nodes
+remaining, left links remaining) strictly decreases lexicographically. For a
+pooled tree each node is still returned with pool_free, then pool_destroy frees
+the slabs.
+**rb_foreach:** in-order walk using the parent pointers. Go to the leftmost node;
+after visiting n, descend to the leftmost node of n's right subtree if there is
+one, otherwise climb until arriving from a left child. O(1) space, read-only (no
+temporary re-linking as in Morris traversal). Callback contract: fn must not
+insert into or delete from the tree during the walk.
+**Scale:** the 10^6-node build/foreach/destroy tests run at full size under
+`make test`, `make asan` and `make leaks`. Under valgrind in CI (`make memcheck`)
+the Makefile sets RB_BIG_N=20000 for the unit-test binary, so the 10^6 case does
+not run there. validate_rec (rb_validate) is still recursive; it is outside this
+mutation's scope and its depth is O(log n).
 
 ## Where the agent was most and least reliable
 

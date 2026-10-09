@@ -527,6 +527,58 @@ static void test_pooled_insert_faults(void)
 	rb_destroy(t);
 }
 
+/* ---------------------------------------------------------------------------
+ * A2 M3: iterative rb_destroy / rb_foreach at scale.
+ * ------------------------------------------------------------------------- */
+
+struct order_ctx {
+	char   prev[16];
+	size_t n;
+	int    ok;
+};
+
+static void order_cb(const char *key, void *value, void *ctx)
+{
+	(void)value;
+	struct order_ctx *c = ctx;
+	if (c->n > 0 && strcmp(c->prev, key) >= 0)
+		c->ok = 0;
+	snprintf(c->prev, sizeof c->prev, "%s", key);
+	c->n++;
+}
+
+/* RB_BIG_N overrides the node count: `make memcheck` sets it lower because
+ * valgrind makes 10^6 nodes impractical. */
+static size_t big_n(void)
+{
+	const char *e = getenv("RB_BIG_N");
+	return e != NULL ? (size_t)atol(e) : 1000000;
+}
+
+static void test_big_tree(int pooled)
+{
+	size_t n = big_n();
+	printf("test: M3 %zu-node %s tree: foreach order, then destroy\n",
+	       n, pooled ? "pooled" : "plain");
+	rbtree_t *t = pooled ? rb_create_pooled(NULL) : rb_create(NULL);
+	char key[16];
+	/* 1000003 is prime, so i * 7919 mod it visits distinct keys in scrambled order. */
+	for (size_t i = 0; i < n; i++) {
+		snprintf(key, sizeof key, "%07zu", (i * 7919) % 1000003);
+		if (rb_insert(t, key, NULL) != 0) {
+			CHECK(0, "insert failed while building the big tree");
+			break;
+		}
+	}
+	CHECK(rb_size(t) == n, "big tree has the wrong size");
+
+	struct order_ctx c = { .ok = 1 };
+	rb_foreach(t, order_cb, &c);
+	CHECK(c.n == n, "foreach did not visit every node exactly once");
+	CHECK(c.ok, "foreach visited keys out of order");
+	rb_destroy(t);
+}
+
 int main(void)
 {
 	test_insert_find();
@@ -579,6 +631,8 @@ int main(void)
 	test_fault_insert_sweep(1);
 	test_fault_no_alloc_paths(1);
 	test_pooled_insert_faults();
+	test_big_tree(0);
+	test_big_tree(1);
 
 	if (failures == 0) {
 		printf("test_rbtree: all cases passed\n");

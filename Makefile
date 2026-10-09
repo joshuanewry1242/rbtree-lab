@@ -25,7 +25,7 @@ asan: clean test
 # valgrind does not run on Apple Silicon macOS; this target runs in CI
 # (.github/workflows/battery.yml, gcc:14 container).
 memcheck: clean all
-	valgrind --leak-check=full --show-leak-kinds=all \
+	RB_BIG_N=20000 valgrind --leak-check=full --show-leak-kinds=all \
 		--error-exitcode=1 ./$(BIN)
 	valgrind --leak-check=full --show-leak-kinds=all \
 		--error-exitcode=1 ./$(FUZZBIN) 20000
