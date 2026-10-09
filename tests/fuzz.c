@@ -28,17 +28,16 @@ static void die(const char *why, long op, int i)
 	exit(1);
 }
 
-int main(int argc, char **argv)
+/* One full run against the reference model; `pooled` picks rb_create_pooled
+ * (M2) over rb_create. Same seed both times, so both see the same op stream. */
+static int run(long ops, int pooled)
 {
-	long ops = (argc > 1) ? atol(argv[1]) : 100000;
-	printf("fuzz: seed=%u, %ld ops, %d-key universe\n", SEED, ops, N);
-
-	for (int i = 0; i < N; i++)
-		snprintf(keys[i], sizeof keys[i], "f%04d", i);
+	printf("fuzz: seed=%u, %ld ops, %d-key universe, %s\n", SEED, ops, N,
+	       pooled ? "pooled" : "plain");
 
 	srand(SEED);
-	static int present[N];
-	rbtree_t *t = rb_create(NULL);
+	int present[N] = { 0 };
+	rbtree_t *t = pooled ? rb_create_pooled(NULL) : rb_create(NULL);
 	if (t == NULL)
 		die("rb_create returned NULL", 0, 0);
 
@@ -100,4 +99,14 @@ int main(int argc, char **argv)
 	rb_destroy(t);
 	printf("fuzz: %ld ops, all cross-checks passed\n", ops);
 	return 0;
+}
+
+int main(int argc, char **argv)
+{
+	long ops = (argc > 1) ? atol(argv[1]) : 100000;
+
+	for (int i = 0; i < N; i++)
+		snprintf(keys[i], sizeof keys[i], "f%04d", i);
+
+	return run(ops, 0) || run(ops, 1);
 }

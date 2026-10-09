@@ -1,6 +1,7 @@
 #include "rbtree.h"
 
 #include "fault_alloc.h"
+#include "../src/pool.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -275,9 +276,9 @@ static int snap_equal(const struct key_snap *a, const struct key_snap *b)
 
 /* Tree that owns heap values, so a leaked or double-freed value shows up
  * under asan / leaks. Built with the injector disarmed. */
-static rbtree_t *build_owned_tree(void)
+static rbtree_t *build_owned_tree(int pooled)
 {
-	rbtree_t *t = rb_create(free);
+	rbtree_t *t = pooled ? rb_create_pooled(free) : rb_create(free);
 	for (size_t i = 0; i < FAULT_NKEYS; i++) {
 		char *v = strdup(fault_keys[i]);
 		if (rb_insert(t, fault_keys[i], v) != 0) {
@@ -301,15 +302,15 @@ static void test_fault_create(void)
 	rb_destroy(t);
 }
 
-static void test_fault_insert_sweep(void)
+static void test_fault_insert_sweep(int pooled)
 {
-	printf("test: M1 rb_insert fault sweep\n");
+	printf("test: %s rb_insert fault sweep\n", pooled ? "M2 pooled" : "M1");
 	int failed_iters = 0;
 
 	/* Invariant: at iteration n, allocations 1..n-1 of the insert succeed
 	 * and the n-th fails; the loop ends on the first n that never fires. */
 	for (long n = 1;; n++) {
-		rbtree_t       *t = build_owned_tree();
+		rbtree_t       *t = build_owned_tree(pooled);
 		struct key_snap before = { 0 };
 		rb_foreach(t, snap_cb, &before);
 		size_t size_before = rb_size(t);
@@ -340,13 +341,16 @@ static void test_fault_insert_sweep(void)
 		rb_destroy(t);
 	}
 
-	CHECK(failed_iters >= 2, "sweep covered fewer than 2 failure points (node + key)");
+	/* Plain: node + key. Pooled with free slots: only the key allocates; the
+	 * slab-growth failure point is covered by test_pooled_insert_faults. */
+	CHECK(failed_iters >= (pooled ? 1 : 2),
+	      "sweep missed a failure point (plain: node + key; pooled: key)");
 }
 
-static void test_fault_no_alloc_paths(void)
+static void test_fault_no_alloc_paths(int pooled)
 {
-	printf("test: M1 overwrite and delete do not allocate\n");
-	rbtree_t *t = build_owned_tree();
+	printf("test: %s overwrite and delete do not allocate\n", pooled ? "M2 pooled" : "M1");
+	rbtree_t *t = build_owned_tree(pooled);
 
 	fault_alloc_arm(1);
 	int rc_over = rb_insert(t, "m", strdup("m2"));
@@ -360,6 +364,166 @@ static void test_fault_no_alloc_paths(void)
 	CHECK(rb_find(t, "m") != NULL && strcmp(rb_find(t, "m"), "m2") == 0,
 	      "overwrite did not install the new value");
 	CHECK(rb_validate(t) == 0, "tree invalid after overwrite + delete");
+	rb_destroy(t);
+}
+
+/* ---------------------------------------------------------------------------
+ * A2 M2: slab pool and pooled trees.
+ * ------------------------------------------------------------------------- */
+
+static void test_pool_basic(void)
+{
+	printf("test: M2 pool alloc/free/stats\n");
+	rb_pool_t *p = pool_create(40);
+	CHECK(p != NULL, "pool_create failed");
+	CHECK(pool_create(5000) == NULL, "pool_create accepted an object larger than a slab");
+
+	size_t slabs, live, freeo;
+	pool_stats(p, &slabs, &live, &freeo);
+	CHECK(slabs == 0 && live == 0 && freeo == 0, "fresh pool should own nothing");
+
+	void *first = pool_alloc(p);
+	CHECK(first != NULL, "first pool_alloc failed");
+	pool_stats(p, &slabs, &live, &freeo);
+	CHECK(slabs == 1 && live == 1, "first alloc should create exactly one slab");
+	size_t per_slab = live + freeo;
+
+	void *objs[1000];
+	size_t n = 0;
+	objs[n++] = first;
+	/* Invariant: live + free_objs == slabs * per_slab, objs[0..n) are live. */
+	while (n < 3 * per_slab) {
+		objs[n] = pool_alloc(p);
+		CHECK(objs[n] != NULL, "pool_alloc failed with no fault injected");
+		for (size_t i = 0; i < n; i++)
+			if (objs[i] == objs[n]) {
+				CHECK(0, "pool_alloc returned a slot that is still live");
+				break;
+			}
+		n++;
+	}
+	pool_stats(p, &slabs, &live, &freeo);
+	CHECK(slabs == 3 && live == n && live + freeo == slabs * per_slab,
+	      "stats invariant broken after spilling into more slabs");
+
+	for (size_t i = 0; i < n; i++)
+		pool_free(p, objs[i]);
+	pool_stats(p, &slabs, &live, &freeo);
+	CHECK(slabs == 3 && live == 0 && freeo == 3 * per_slab,
+	      "freeing everything should keep the slabs and free every slot");
+
+	fault_alloc_arm(1);
+	void *again = pool_alloc(p);
+	int fired = fault_alloc_fired();
+	fault_alloc_disarm();
+	CHECK(again != NULL && !fired, "reuse after free should not allocate");
+	pool_free(p, again);
+	pool_destroy(p);
+	pool_destroy(NULL);
+}
+
+static void test_pool_growth_fault(void)
+{
+	printf("test: M2 pool slab-growth failure leaves the pool untouched\n");
+	rb_pool_t *p = pool_create(40);
+	void *first = pool_alloc(p);
+	size_t slabs, live, freeo;
+	pool_stats(p, &slabs, &live, &freeo);
+	size_t per_slab = live + freeo;
+	for (size_t i = 1; i < per_slab; i++)
+		pool_alloc(p); /* slab is now full: the next alloc must grow */
+
+	fault_alloc_arm(1);
+	void *r = pool_alloc(p);
+	int fired = fault_alloc_fired();
+	fault_alloc_disarm();
+	CHECK(fired, "growing a full pool did not allocate");
+	CHECK(r == NULL, "pool_alloc did not return NULL when the slab alloc failed");
+	pool_stats(p, &slabs, &live, &freeo);
+	CHECK(slabs == 1 && live == per_slab && freeo == 0, "failed growth changed pool stats");
+	CHECK(pool_alloc(p) != NULL, "pool unusable after a failed growth");
+	(void)first;
+	pool_destroy(p); /* frees live objects wholesale */
+}
+
+static void test_pooled_tree(void)
+{
+	printf("test: M2 pooled tree behaves like a plain tree\n");
+	rbtree_t *t = rb_create_pooled(free);
+	char key[16];
+	for (int i = 0; i < 500; i++) {
+		snprintf(key, sizeof key, "k%04d", (i * 7919) % 500);
+		CHECK(rb_insert(t, key, strdup(key)) == 0, "pooled insert failed");
+	}
+	CHECK(rb_size(t) == 500, "pooled tree size mismatch");
+	CHECK(rb_validate(t) == 0, "pooled tree invalid after inserts");
+	for (int i = 0; i < 500; i += 2) {
+		snprintf(key, sizeof key, "k%04d", i);
+		CHECK(rb_delete(t, key) == 0, "pooled delete failed");
+	}
+	CHECK(rb_size(t) == 250 && rb_validate(t) == 0, "pooled tree wrong after deletes");
+	for (int i = 0; i < 100; i++) { /* reuse freed slots */
+		snprintf(key, sizeof key, "n%04d", i);
+		CHECK(rb_insert(t, key, strdup(key)) == 0, "pooled re-insert failed");
+	}
+	CHECK(rb_validate(t) == 0, "pooled tree invalid after reuse");
+	rb_destroy(t);
+
+	t = rb_create_pooled(NULL);
+	CHECK(rb_insert(t, "a", NULL) == 0, "pooled insert failed");
+	rb_destroy_reach(t);
+	rb_destroy(rb_create_pooled(NULL)); /* empty pooled tree: no slab yet */
+}
+
+static void test_pooled_create_fault(void)
+{
+	printf("test: M2 rb_create_pooled under allocation failure\n");
+	int failed_iters = 0;
+	/* Invariant: allocations 1..n-1 succeed, the n-th fails; ends on first n that never fires. */
+	for (long n = 1;; n++) {
+		fault_alloc_arm(n);
+		rbtree_t *t = rb_create_pooled(NULL);
+		int fired = fault_alloc_fired();
+		fault_alloc_disarm();
+		if (!fired) {
+			CHECK(t != NULL, "rb_create_pooled failed with no fault injected");
+			rb_destroy(t);
+			break;
+		}
+		failed_iters++;
+		CHECK(t == NULL, "rb_create_pooled did not return NULL on allocation failure");
+	}
+	CHECK(failed_iters >= 2, "sweep covered fewer than 2 failure points (tree + pool)");
+}
+
+/* Fail the first allocation of every insert into a growing pooled tree. That
+ * is the slab when the pool is full, otherwise the key copy -- so both
+ * failure points are hit without the test knowing the slab geometry. */
+static void test_pooled_insert_faults(void)
+{
+	printf("test: M2 pooled insert failures across slab boundaries\n");
+	rbtree_t *t = rb_create_pooled(free);
+	char key[16];
+	int failures_seen = 0;
+	for (int i = 0; i < 300; i++) {
+		snprintf(key, sizeof key, "k%04d", (i * 7919) % 300);
+		size_t before = rb_size(t);
+		char *v = strdup(key);
+
+		fault_alloc_arm(1);
+		int rc = rb_insert(t, key, v);
+		int fired = fault_alloc_fired();
+		fault_alloc_disarm();
+		CHECK(fired, "insert of a new key performed no allocation");
+		CHECK(rc == -1, "pooled insert did not return -1 on allocation failure");
+		CHECK(rb_size(t) == before && rb_find(t, key) == NULL,
+		      "failed pooled insert changed the tree");
+		CHECK(rb_validate(t) == 0, "pooled tree invalid after failed insert");
+		failures_seen++;
+
+		CHECK(rb_insert(t, key, v) == 0, "retry after failed pooled insert failed");
+	}
+	CHECK(failures_seen == 300 && rb_size(t) == 300, "pooled fault loop miscounted");
 	rb_destroy(t);
 }
 
@@ -406,8 +570,15 @@ int main(void)
 	test_overwrite_only_key();
 	test_long_key();
 	test_fault_create();
-	test_fault_insert_sweep();
-	test_fault_no_alloc_paths();
+	test_fault_insert_sweep(0);
+	test_fault_no_alloc_paths(0);
+	test_pool_basic();
+	test_pool_growth_fault();
+	test_pooled_tree();
+	test_pooled_create_fault();
+	test_fault_insert_sweep(1);
+	test_fault_no_alloc_paths(1);
+	test_pooled_insert_faults();
 
 	if (failures == 0) {
 		printf("test_rbtree: all cases passed\n");

@@ -1,6 +1,7 @@
 #include "rbtree.h"
 
 #include "fault_alloc.h"
+#include "pool.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -28,15 +29,31 @@ struct rbtree {
 	struct rb_node  *root;
 	rb_value_free_fn value_free;
 	size_t           size;
+	rb_pool_t       *pool;  /* node storage; NULL = plain rb_malloc */
 };
+
+/* Node structs come from the tree's pool when it has one (M2). Keys always
+ * come from rb_malloc. */
+static struct rb_node *node_struct_alloc(rbtree_t *t)
+{
+	return t->pool != NULL ? pool_alloc(t->pool) : rb_malloc(sizeof(struct rb_node));
+}
+
+static void node_struct_free(rbtree_t *t, struct rb_node *n)
+{
+	if (t->pool != NULL)
+		pool_free(t->pool, n);
+	else
+		rb_free(n);
+}
 
 /* The entire allocation dance for one node: node, then key copy, with
  * goto-cleanup if the second allocation fails. Colors the node RED (every
  * new key enters red -- Section 3) and NULLs its links; caller splices it
  * in. Returns NULL on any allocation failure with nothing left allocated. */
-static struct rb_node *node_alloc(const char *key, void *value)
+static struct rb_node *node_alloc(rbtree_t *t, const char *key, void *value)
 {
-	struct rb_node *n = rb_malloc(sizeof *n);
+	struct rb_node *n = node_struct_alloc(t);
 	if (n == NULL)
 		goto fail_node;
 
@@ -54,7 +71,7 @@ static struct rb_node *node_alloc(const char *key, void *value)
 	return n;
 
 fail_key:
-	rb_free(n);
+	node_struct_free(t, n);
 fail_node:
 	return NULL;
 }
@@ -72,10 +89,10 @@ static void node_release_payload(struct rb_node *n, rb_value_free_fn value_free)
 /* Frees everything one node owns: its payload, then the struct itself.
  * Does not touch left/right/parent; callers are responsible for detaching
  * n first. */
-static void node_release(struct rb_node *n, rb_value_free_fn value_free)
+static void node_release(rbtree_t *t, struct rb_node *n)
 {
-	node_release_payload(n, value_free);
-	rb_free(n);
+	node_release_payload(n, t->value_free);
+	node_struct_free(t, n);
 }
 
 /* Left-rotate around x (Figure 2). Owns updating t->root when x was the
@@ -184,7 +201,25 @@ rbtree_t *rb_create(rb_value_free_fn value_free)
 	t->root = NULL;
 	t->size = 0;
 	t->value_free = value_free; /* may be NULL: tree does not own values */
+	t->pool = NULL;
 	return t;
+}
+
+rbtree_t *rb_create_pooled(rb_value_free_fn value_free)
+{
+	rbtree_t *t = rb_create(value_free);
+	if (t == NULL)
+		goto fail_tree;
+
+	t->pool = pool_create(sizeof(struct rb_node));
+	if (t->pool == NULL)
+		goto fail_pool;
+	return t;
+
+fail_pool:
+	rb_free(t);
+fail_tree:
+	return NULL;
 }
 
 int rb_insert(rbtree_t *t, const char *key, void *value)
@@ -216,7 +251,7 @@ int rb_insert(rbtree_t *t, const char *key, void *value)
 
 	/* `cur` is the empty slot: link a new red node as `parent`'s child on
 	 * the `cmp` side, or as t->root when parent == NULL. */
-	struct rb_node *node = node_alloc(key, value);
+	struct rb_node *node = node_alloc(t, key, value);
 	if (node == NULL)
 		return -1; /* allocation failed: tree unchanged, value not consumed */
 
@@ -387,7 +422,7 @@ int rb_delete(rbtree_t *t, const char *key)
 		fixup_parent  = s->parent;
 		x             = s->right;
 		transplant(t, s, s->right);
-		rb_free(s); /* struct only -- key/value now belong to z */
+		node_struct_free(t, s); /* struct only -- key/value now belong to z */
 	} else {
 		/* Zero or one child: z itself is physically unlinked. */
 		x             = (z->left != NULL) ? z->left : z->right;
@@ -395,7 +430,7 @@ int rb_delete(rbtree_t *t, const char *key)
 		removed_color = z->color;
 		transplant(t, z, x);
 
-		node_release(z, t->value_free); /* z itself is being destroyed */
+		node_release(t, z); /* z itself is being destroyed */
 	}
 
 	t->size--;
@@ -478,13 +513,13 @@ int rb_validate(const rbtree_t *t)
 	return 0;
 }
 
-static void destroy_rec(struct rb_node *n, rb_value_free_fn value_free)
+static void destroy_rec(rbtree_t *t, struct rb_node *n)
 {
 	if (n == NULL)
 		return;
-	destroy_rec(n->left, value_free);
-	destroy_rec(n->right, value_free);
-	node_release(n, value_free);
+	destroy_rec(t, n->left);
+	destroy_rec(t, n->right);
+	node_release(t, n);
 }
 
 void rb_destroy(rbtree_t *t)
@@ -492,7 +527,8 @@ void rb_destroy(rbtree_t *t)
 	if (t == NULL)
 		return; /* NULL-safe per include/rbtree.h */
 
-	destroy_rec(t->root, t->value_free);
+	destroy_rec(t, t->root);
+	pool_destroy(t->pool); /* NULL-safe */
 	rb_free(t);
 }
 
@@ -500,12 +536,12 @@ void rb_destroy(rbtree_t *t)
  * recursion by rotating every node onto a right spine as it's freed
  * instead of stacking unvisited left subtrees. Invariant: everything left
  * to free is still reachable from n, so nothing needs remembering. */
-static void destroy_spine(struct rb_node *n, rb_value_free_fn value_free)
+static void destroy_spine(rbtree_t *t, struct rb_node *n)
 {
 	while (n != NULL) {
 		if (n->left == NULL) {
 			struct rb_node *next = n->right;
-			node_release(n, value_free);
+			node_release(t, n);
 			n = next;
 		} else {
 			struct rb_node *l = n->left;
@@ -525,6 +561,7 @@ void rb_destroy_reach(rbtree_t *t)
 	if (t == NULL)
 		return;
 
-	destroy_spine(t->root, t->value_free);
+	destroy_spine(t, t->root);
+	pool_destroy(t->pool);
 	rb_free(t);
 }
