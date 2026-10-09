@@ -6,8 +6,8 @@
 Required episodes (check off as they happen):
 - [x] A plan I revised (Step 3)
 - [x] A rejected / oversized diff (Step 4)
-- [ ] A tool-output debugging loop (Step 5)
-- [ ] A review finding I triaged: one real, one false positive (Step 7)
+- [x] A tool-output debugging loop (Step 5)
+- [x] A review finding I triaged: one real, one false positive (Step 7)
 
 ---
 
@@ -69,3 +69,33 @@ decisions. The agent found that RB_BIG_N was already separate for the big tests,
 so the real change was making the value a Makefile variable (BIG_N).
 **Evidence:** Makefile BIG_N; commit "M3: BIG_N knob for the valgrind scale";
 96558d2 for the original M3 diff
+
+## Episode 4: debugging the pooled insert sweep from test output (M2, step 5)
+**Prompt:** (no new prompt; the agent ran `make test` after wiring in the pool.)
+**What came back:** One failure line from the shared insert sweep: "sweep
+covered fewer than 2 failure points (node + key)". The agent read it, reasoned
+that a pooled tree with free slots only allocates the key, so there is one
+failure point there, not two, and the slab-growth failure is a different case.
+It fixed the assertion per mode (plain >= 2, pooled >= 1) and added a separate
+test that fails allocation #1 of every insert across slab boundaries, then
+re-ran test/asan/leaks green.
+**My judgment:** This is a short loop (run, read output, diagnose, fix, re-run),
+not a long chase, so I am claiming it only as a small example. The check was
+changed because its expectation was wrong for pooled trees, not to make it pass;
+the slab-growth case got its own stronger test.
+**Evidence:** tests/test_rbtree.c test_fault_insert_sweep(pooled),
+test_pooled_insert_faults; commit 9570872
+
+## Episode 5: /code-review on M3, one real finding and one false positive (step 7)
+**Prompt:** `/code-review`, then "fix the issues we found".
+**What came back:** Two findings. (1) rb_snapshot is declared in
+include/rbtree.h but defined nowhere. (2) src/ calls rb_malloc/rb_free, which
+exist only in tests/fault_alloc.c, so src/ will not link without the test seam.
+**My judgment:** Finding 1 is real but expected: rb_snapshot is Mutation 4 and
+had not been started, so the fix is M4, not a patch to M3 (a NULL stub would
+hide the gap). Finding 2 is a false positive: fault_alloc.c is the M0 allocation
+seam, forwards to malloc/free when disarmed, and is linked into every Makefile
+target and CI; adding a second definition in src/ would cause duplicate symbols.
+The agent verified both against the code before touching anything, and refused
+to "fix" finding 2. Finding 1 led to the M4 plan.
+**Evidence:** include/rbtree.h:45; tests/fault_alloc.c:5-22; M4 plan
