@@ -99,3 +99,21 @@ target and CI; adding a second definition in src/ would cause duplicate symbols.
 The agent verified both against the code before touching anything, and refused
 to "fix" finding 2. Finding 1 led to the M4 plan.
 **Evidence:** include/rbtree.h:45; tests/fault_alloc.c:5-22; M4 plan
+
+## Episode 6: auditing the repo against the spec PDF (M2/M3 gaps)
+**Prompt:** I attached the assignment spec and companion and said "do 1-5" (the
+list of remaining items the agent had given me).
+**What came back:** The agent had worked from the header and CLAUDE.md only, so
+reading the spec turned up gaps in already-"done" milestones: (1) no debug
+poisoning in pool_free (Mutation 2 / grading table), (2) no 10^6-node
+foreach + destroy test on a 64 KB pthread stack (Mutation 3), (3) the fault sweep
+was one insert into a 10-key tree, not the spec's 200 inserts / 100 deletes / 50
+overwrites with the unchanged-checks and a counting destructor. It added poisoning
+plus an in-pool live + free_objs invariant assert, test_small_stack (plain and
+pooled), and a full-scenario sweep (plain: 401 failing runs, pooled: 204), all green
+under make test / asan / leaks.
+**My judgment:** The earlier "M2 done" and "M3 done" claims were premature; I
+should have had the agent read the spec before planning. Mutation 4 is ungraded, so
+the agent's M4a refactor was optional work done on main.
+**Evidence:** src/pool.c POISON/asserts; tests/test_rbtree.c test_pool_poison,
+test_fault_sweep_scenario, test_small_stack

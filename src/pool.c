@@ -2,6 +2,7 @@
 
 #include "fault_alloc.h"
 
+#include <assert.h>
 #include <stdalign.h>
 #include <stddef.h>
 #include <string.h>
@@ -12,6 +13,16 @@
  * the free-list link in their first bytes. */
 
 #define SLAB_SIZE 4096u
+#define POISON_BYTE 0xDD
+
+/* Debug builds (no NDEBUG) scribble POISON_BYTE over every dead slot so a
+ * stale pointer into the pool reads obvious garbage. ASan cannot do this for
+ * us: it only knows the 4096-byte slab is live, not our slot boundaries. */
+#ifndef NDEBUG
+#define POISON(slot, n) memset((slot), POISON_BYTE, (n))
+#else
+#define POISON(slot, n) ((void)0)
+#endif
 
 struct slab_hdr {
 	struct slab_hdr *next;
@@ -38,7 +49,10 @@ static size_t slab_hdr_size(void)
 }
 
 /* Free-list links live inside slots of arbitrary type, so go through memcpy
- * rather than a typed pointer. */
+ * rather than a typed pointer. Ownership of a dead slot's first bytes: poison
+ * the whole slot first, then write the link over the front of it, so a stale
+ * reader of the rest sees 0xDD and a stale reader of the front sees a pointer
+ * that at least belongs to the pool. */
 static void *slot_next(const void *slot)
 {
 	void *next;
@@ -87,11 +101,13 @@ static int pool_grow(rb_pool_t *p)
 	/* Invariant: slots [0, i) of this slab are on the free list. */
 	for (size_t i = 0; i < p->per_slab; i++) {
 		void *slot = base + i * p->stride;
+		POISON(slot, p->stride);
 		slot_set_next(slot, p->free_list);
 		p->free_list = slot;
 	}
 	p->slabs++;
 	p->free_objs += p->per_slab;
+	assert(p->live + p->free_objs == p->slabs * p->per_slab);
 	return 0;
 }
 
@@ -104,15 +120,18 @@ void *pool_alloc(rb_pool_t *p)
 	p->free_list = slot_next(slot);
 	p->live++;
 	p->free_objs--;
+	assert(p->live + p->free_objs == p->slabs * p->per_slab);
 	return slot;
 }
 
 void pool_free(rb_pool_t *p, void *obj)
 {
+	POISON(obj, p->stride);
 	slot_set_next(obj, p->free_list);
 	p->free_list = obj;
 	p->live--;
 	p->free_objs++;
+	assert(p->live + p->free_objs == p->slabs * p->per_slab);
 }
 
 void pool_stats(const rb_pool_t *p,

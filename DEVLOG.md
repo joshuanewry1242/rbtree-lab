@@ -94,3 +94,14 @@ DECIDED: foreach goes from parent walk to successor search because the approved
 NEXT FIRST STEP: M4b plan check-in: refs on nodes, payload split (key + value
   refcounted), refcount-aware destroy_spine, pool refcount. No snapshots yet.
 OPEN: PROMPTLOG episodes 4-5 are factual drafts for you to edit.
+
+## 2026-10-09 (week 2: spec audit)
+STATE: spec PDF read; three graded gaps closed. make test, asan, leaks green.
+DID: debug poisoning (0xDD) + live+free_objs asserts in pool.c; 10^6-node
+  foreach+destroy on a 64 KB pthread stack (plain+pooled); full-scenario fault
+  sweep (200 ins / 100 del / 50 overwrite) for plain and pooled.
+LEARNED: spec says Mutation 4 is ungraded and to do it after M3 on a branch or
+  behind a flag; M4a (parent pointers removed) is on main.
+NEXT FIRST STEP: push and confirm CI (make memcheck) is green; decide whether M4a
+  stays on main or moves to a branch.
+OPEN: memcheck never run (CI only); logs/*.jsonl need copying into the submission.

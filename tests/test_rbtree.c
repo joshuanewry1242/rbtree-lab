@@ -3,6 +3,7 @@
 #include "fault_alloc.h"
 #include "../src/pool.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -422,6 +423,24 @@ static void test_pool_basic(void)
 	pool_destroy(NULL);
 }
 
+static void test_pool_poison(void)
+{
+	printf("test: M2 pool poisons dead slots (debug builds)\n");
+#ifndef NDEBUG
+	rb_pool_t *p = pool_create(48);
+	unsigned char *a = pool_alloc(p);
+	memset(a, 0x11, 48);
+	pool_free(p, a);
+	int ok = 1;
+	/* the front sizeof(void*) bytes hold the free-list link; the rest is poison */
+	for (size_t i = sizeof(void *); i < 48; i++)
+		if (a[i] != 0xDD)
+			ok = 0;
+	CHECK(ok, "freed slot was not poisoned with 0xDD past the free-list link");
+	pool_destroy(p);
+#endif
+}
+
 static void test_pool_growth_fault(void)
 {
 	printf("test: M2 pool slab-growth failure leaves the pool untouched\n");
@@ -579,6 +598,181 @@ static void test_big_tree(int pooled)
 	rb_destroy(t);
 }
 
+/* ---------------------------------------------------------------------------
+ * Spec 8.1 fault sweep: a fixed scenario (insert 200 keys, delete 100,
+ * overwrite 50) re-run with the n-th allocation failing, n = 1, 2, ... until
+ * a run completes without hitting the fault. Same scenario for plain and
+ * pooled trees.
+ * ------------------------------------------------------------------------- */
+
+#define SW_KEYS 200
+
+static long sw_freed; /* values the tree released through value_free */
+
+static void sw_value_free(void *v)
+{
+	sw_freed++;
+	free(v);
+}
+
+struct sweep {
+	rbtree_t *t;
+	void     *mv[SW_KEYS]; /* reference model: value for each key, NULL = absent */
+	size_t    msize;
+	long      accepted;    /* values the tree took ownership of */
+};
+
+static void sw_key(char *buf, size_t cap, int i)
+{
+	snprintf(buf, cap, "k%03d", (i * 73) % SW_KEYS); /* 73 is coprime to 200 */
+}
+
+/* One insert (new key or overwrite) with every "exactly as it was" check
+ * after a failure: size, find, validate, and the caller's value not freed. */
+static void sw_insert(struct sweep *w, int i)
+{
+	char key[8];
+	sw_key(key, sizeof key, i);
+	int idx = (i * 73) % SW_KEYS;
+
+	int *v = malloc(sizeof *v);
+	*v = i;
+	long   freed_before = sw_freed;
+	size_t size_before  = rb_size(w->t);
+	void  *found_before = rb_find(w->t, key);
+
+	int rc = rb_insert(w->t, key, v);
+	if (rc == 0) {
+		if (w->mv[idx] != NULL)
+			CHECK(sw_freed == freed_before + 1, "overwrite did not free exactly the old value");
+		else
+			w->msize++;
+		w->mv[idx] = v;
+		w->accepted++;
+		return;
+	}
+	CHECK(rc == -1, "rb_insert returned something other than 0 or -1");
+	CHECK(fault_alloc_fired(), "rb_insert failed with no fault injected");
+	CHECK(w->mv[idx] == NULL, "an overwrite (which must not allocate) failed");
+	CHECK(sw_freed == freed_before, "failed insert consumed the caller's value");
+	CHECK(rb_size(w->t) == size_before, "size changed after failed insert");
+	CHECK(rb_find(w->t, key) == found_before, "find changed after failed insert");
+	CHECK(rb_validate(w->t) == 0, "tree invalid after failed insert");
+	free(v); /* still the caller's */
+}
+
+static void sw_delete(struct sweep *w, int i)
+{
+	char key[8];
+	sw_key(key, sizeof key, i);
+	int idx = (i * 73) % SW_KEYS;
+
+	long freed_before = sw_freed;
+	int  rc = rb_delete(w->t, key);
+	if (w->mv[idx] != NULL) {
+		CHECK(rc == 0, "rb_delete of a present key failed");
+		CHECK(sw_freed == freed_before + 1, "rb_delete did not free exactly its value");
+		w->mv[idx] = NULL;
+		w->msize--;
+	} else {
+		CHECK(rc == -1, "rb_delete of an absent key did not return -1");
+	}
+}
+
+/* Returns 1 if the armed fault fired somewhere in the run. */
+static int sw_run(int pooled, long n)
+{
+	sw_freed = 0;
+	struct sweep w = { 0 };
+
+	fault_alloc_arm(n);
+	w.t = pooled ? rb_create_pooled(sw_value_free) : rb_create(sw_value_free);
+	if (w.t == NULL) {
+		int fired = fault_alloc_fired();
+		fault_alloc_disarm();
+		CHECK(fired, "create returned NULL with no fault injected");
+		return 1;
+	}
+
+	for (int i = 0; i < SW_KEYS; i++)
+		sw_insert(&w, i);
+	for (int i = 0; i < 100; i++)
+		sw_delete(&w, i);
+	for (int i = 100; i < 150; i++)
+		sw_insert(&w, i); /* overwrite: these keys are present unless their first insert failed */
+	int fired = fault_alloc_fired();
+	fault_alloc_disarm();
+
+	CHECK(rb_validate(w.t) == 0, "tree invalid at end of scenario");
+	CHECK(rb_size(w.t) == w.msize, "size differs from the reference model");
+	for (int i = 0; i < SW_KEYS; i++) {
+		char key[8];
+		snprintf(key, sizeof key, "k%03d", i);
+		CHECK(rb_find(w.t, key) == w.mv[i], "model key missing or wrong value");
+	}
+	rb_destroy(w.t);
+	CHECK(sw_freed == w.accepted,
+	      "destroy did not release every value the tree owned");
+	return fired;
+}
+
+static void test_fault_sweep_scenario(int pooled)
+{
+	printf("test: spec 8.1 full-scenario fault sweep (%s)\n", pooled ? "pooled" : "plain");
+	long n = 1;
+	/* Invariant: runs 1..n-1 each hit their fault; stops at the first n that never fires. */
+	while (sw_run(pooled, n))
+		n++;
+	printf("  sweep %s: %ld failing runs, completed clean at n=%ld\n",
+	       pooled ? "pooled" : "plain", n - 1, n);
+	CHECK(n > 10, "sweep covered suspiciously few allocations");
+}
+
+/* ---------------------------------------------------------------------------
+ * Spec 8.3: 10^6 nodes torn down (and walked) on a 64 KB pthread stack.
+ * ------------------------------------------------------------------------- */
+
+struct stack_job {
+	rbtree_t        *t;
+	struct order_ctx c;
+};
+
+static void *small_stack_worker(void *arg)
+{
+	struct stack_job *j = arg;
+	rb_foreach(j->t, order_cb, &j->c);
+	rb_destroy(j->t);
+	return NULL;
+}
+
+static void test_small_stack(int pooled)
+{
+	size_t n = big_n();
+	printf("test: spec 8.3 %zu-node %s tree, foreach + destroy on a 64 KB stack\n",
+	       n, pooled ? "pooled" : "plain");
+	struct stack_job j = { .t = pooled ? rb_create_pooled(NULL) : rb_create(NULL),
+	                       .c = { .ok = 1 } };
+	char key[16];
+	for (size_t i = 0; i < n; i++) {
+		snprintf(key, sizeof key, "%07zu", (i * 7919) % 1000003);
+		if (rb_insert(j.t, key, NULL) != 0) {
+			CHECK(0, "insert failed while building the small-stack tree");
+			break;
+		}
+	}
+
+	pthread_attr_t attr;
+	pthread_t      th;
+	pthread_attr_init(&attr);
+	CHECK(pthread_attr_setstacksize(&attr, 64 * 1024) == 0, "could not set a 64 KB stack");
+	CHECK(pthread_create(&th, &attr, small_stack_worker, &j) == 0, "pthread_create failed");
+	pthread_join(th, NULL);
+	pthread_attr_destroy(&attr);
+
+	CHECK(j.c.n == n, "foreach on the small stack missed nodes");
+	CHECK(j.c.ok, "foreach on the small stack visited keys out of order");
+}
+
 int main(void)
 {
 	test_insert_find();
@@ -625,6 +819,7 @@ int main(void)
 	test_fault_insert_sweep(0);
 	test_fault_no_alloc_paths(0);
 	test_pool_basic();
+	test_pool_poison();
 	test_pool_growth_fault();
 	test_pooled_tree();
 	test_pooled_create_fault();
@@ -633,6 +828,10 @@ int main(void)
 	test_pooled_insert_faults();
 	test_big_tree(0);
 	test_big_tree(1);
+	test_fault_sweep_scenario(0);
+	test_fault_sweep_scenario(1);
+	test_small_stack(0);
+	test_small_stack(1);
 
 	if (failures == 0) {
 		printf("test_rbtree: all cases passed\n");

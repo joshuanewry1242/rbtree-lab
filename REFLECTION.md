@@ -1,7 +1,18 @@
 # REFLECTION: Assignment 2
 
 ## Slab pool vs. the kernel's kmem_cache
-<!-- What does the kernel's version add (per-CPU caches, ...), and WHY at kernel scale? -->
+Mine is one pool, one lock-free (single-threaded) free list, 4096-byte slabs, no
+reclaim. kmem_cache adds: per-CPU free lists/magazines, so allocating cores don't
+contend on one list or bounce its cache line (at kernel scale many cores allocate
+the same object type constantly, so a shared list becomes the bottleneck);
+per-NUMA-node partial lists, so memory stays near the CPU using it; slab states
+(full/partial/empty) and shrinking, so empty slabs are returned to the page
+allocator under memory pressure instead of being held forever like mine until
+pool_destroy; constructors and cache coloring, so reused objects are pre-initialized
+and slots spread across cache lines; and hardening/debug options (red zones,
+poisoning, freelist randomization) that are switchable at runtime. Each exists
+because the workload (many CPUs, memory pressure, security exposure) changed, not
+for its own sake.
 
 ## pool_stats definitions
 `slabs` is the number of 4096-byte slabs the pool owns. `live` is the number of
@@ -24,7 +35,16 @@ stored with memcpy to avoid aliasing a typed pointer onto arbitrary slot memory.
 The cost of in-band placement is that the header takes a few bytes off each slab.
 
 ## Poisoning rationale
-<!-- 0xDD on free: what bug class it catches that ASan no longer can; poison vs free-list link ordering -->
+ASan tracks the 4096-byte slab as one live allocation; it doesn't know where my
+slot boundaries are, so a stale pointer to a freed node still points at "valid"
+memory and a use-after-free of a pooled node goes unreported. In debug builds
+(no NDEBUG) pool_free and slab carving memset the whole slot to 0xDD and then
+write the free-list link over the front of it. So a stale reader of the link bytes
+sees a pointer that belongs to the pool, and a stale reader of any other field
+sees 0xDD garbage (a key pointer of 0xDDDDDDDDDDDDDDDD faults immediately).
+test_pool_poison checks the bytes after the link are 0xDD. Poisoning catches
+stale reads, not stale writes into a dead slot that happen before it is
+re-allocated.
 
 ## Mutation 3 notes
 **Teardown:** rb_destroy calls destroy_spine, which rotates each left child up
@@ -47,7 +67,21 @@ not run there. The scale is the Makefile variable `BIG_N` (default 20000;
 mutation's scope and its depth is O(log n).
 
 ## Where the agent was most and least reliable
+Most reliable: mechanical, well-specified changes with an oracle to check them,
+e.g. removing parent pointers (M4a) and rewriting the fixups on a path array passed
+the unit tests and both fuzz modes on the first build. Least reliable: scope and
+process. It worked from the header and CLAUDE.md, not the spec PDF, so it silently
+left out three graded items (debug poisoning, the 64 KB-stack 10^6-node test, and
+the 200/100/50 fault-sweep scenario) until the spec was supplied; it also committed
+M3 immediately after "approve" without leaving room to push back. (Edit this to
+match your own experience.)
 
 ## One bug the agent introduced that I caught, and how
+The documented one: the agent's shared insert-sweep asserted two failure points
+(node and key) for pooled trees too, but a pooled tree with free slots only
+allocates the key. The test output flagged it; the fix was a per-mode threshold
+plus a separate slab-boundary test, not a loosened assertion (PROMPTLOG episode 4).
+That was found by the test run, not by my reading a diff. (If you caught a different
+agent bug yourself, replace this.)
 
 ## (Optional) COW snapshots vs. fork(): what plays the page fault? the struct page refcount?
