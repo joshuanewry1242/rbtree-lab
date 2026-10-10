@@ -27,6 +27,13 @@
 - Prefer the smallest diff that passes. Do not refactor unrelated code.
 - Every non-obvious loop gets a one-line invariant comment.
 
+## Pool and tests (M2/M3)
+- pool.c poisons dead slots with 0xDD in debug builds (no NDEBUG) and asserts
+  live + free_objs == slabs * objs_per_slab. Poison the slot, then write the link.
+- The 10^6-node tests scale with RB_BIG_N (Makefile BIG_N, 20000 under memcheck).
+- Mutation 4 (rb_snapshot) is ungraded and lives on branch `reach`; on main
+  rb_snapshot stays undefined. Do not start it on main.
+
 ## Code map
 - include/rbtree.h: frozen public API. src/rbtree.c: tree logic, node_alloc/
   node_release, rotations, fixups, validate, teardown.

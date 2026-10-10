@@ -105,3 +105,11 @@ LEARNED: spec says Mutation 4 is ungraded and to do it after M3 on a branch or
 NEXT FIRST STEP: push and confirm CI (make memcheck) is green; decide whether M4a
   stays on main or moves to a branch.
 OPEN: memcheck never run (CI only); logs/*.jsonl need copying into the submission.
+
+## 2026-10-09 (week 2: M4a moved to a branch)
+DID: kept the M4a work (parent pointers removed, successor-search foreach) on
+  branch `reach`; main's src/rbtree.c is back to the M3 version (parent-pointer
+  foreach). Spec: Mutation 4 is ungraded, do it after M3 on a branch. CLAUDE.md
+  amended (poisoning, RB_BIG_N, Reach lives on `reach`).
+NEXT FIRST STEP: confirm CI green on main (make memcheck); then optionally resume
+  M4b on `reach`.
