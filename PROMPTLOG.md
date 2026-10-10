@@ -117,3 +117,18 @@ should have had the agent read the spec before planning. Mutation 4 is ungraded,
 the agent's M4a refactor was optional work done on main.
 **Evidence:** src/pool.c POISON/asserts; tests/test_rbtree.c test_pool_poison,
 test_fault_sweep_scenario, test_small_stack
+
+## Episode 7: first CI run red, fixed from the real error (tool-output loop, CI)
+**Prompt:** (pasted screenshots of the failed battery.yml run, then the `make asan`
+step log) "no its red".
+**What came back:** The agent had said the code was ready but had never seen
+`make memcheck` run. Using GitHub's public job API it found `make test` green and
+`make asan` red with memcheck skipped, and asked for the step log rather than
+guessing. The log showed tests/test_rbtree.c:710 in sw_run:
+`-Werror=format-truncation`, `snprintf(key, sizeof key, "k%03d", i)` into an
+8-byte buffer (gcc 14 under asan; Apple clang does not flag it). It widened every
+test key buffer to 32 and re-ran test/asan/leaks locally.
+**My judgment:** The agent's earlier "ready to submit" was premature without CI.
+The fix was a one-line-per-site change to test buffers only; no assertion was
+loosened. CI on the fix commit: make test, make asan, make memcheck all green.
+**Evidence:** commit 2bbe81f; battery run on main (all three steps success)
