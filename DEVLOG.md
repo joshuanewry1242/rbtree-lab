@@ -113,3 +113,9 @@ DID: kept the M4a work (parent pointers removed, successor-search foreach) on
   amended (poisoning, RB_BIG_N, Reach lives on `reach`).
 NEXT FIRST STEP: confirm CI green on main (make memcheck); then optionally resume
   M4b on `reach`.
+
+## 2026-10-09 (week 2: first CI run)
+LEARNED: CI (gcc 14) failed `make asan` with -Werror=format-truncation in my new
+  sweep test: key[8] vs snprintf("k%03d", int). Apple clang doesn't flag it. Same
+  family as the fuzz.c key[16] comment. Widened all test key buffers to 32.
+NEXT FIRST STEP: confirm the CI run for this commit gets through asan and memcheck.

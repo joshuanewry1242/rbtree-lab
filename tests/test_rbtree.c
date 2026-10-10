@@ -469,7 +469,7 @@ static void test_pooled_tree(void)
 {
 	printf("test: M2 pooled tree behaves like a plain tree\n");
 	rbtree_t *t = rb_create_pooled(free);
-	char key[16];
+	char key[32];
 	for (int i = 0; i < 500; i++) {
 		snprintf(key, sizeof key, "k%04d", (i * 7919) % 500);
 		CHECK(rb_insert(t, key, strdup(key)) == 0, "pooled insert failed");
@@ -522,7 +522,7 @@ static void test_pooled_insert_faults(void)
 {
 	printf("test: M2 pooled insert failures across slab boundaries\n");
 	rbtree_t *t = rb_create_pooled(free);
-	char key[16];
+	char key[32];
 	int failures_seen = 0;
 	for (int i = 0; i < 300; i++) {
 		snprintf(key, sizeof key, "k%04d", (i * 7919) % 300);
@@ -580,7 +580,7 @@ static void test_big_tree(int pooled)
 	printf("test: M3 %zu-node %s tree: foreach order, then destroy\n",
 	       n, pooled ? "pooled" : "plain");
 	rbtree_t *t = pooled ? rb_create_pooled(NULL) : rb_create(NULL);
-	char key[16];
+	char key[32];
 	/* 1000003 is prime, so i * 7919 mod it visits distinct keys in scrambled order. */
 	for (size_t i = 0; i < n; i++) {
 		snprintf(key, sizeof key, "%07zu", (i * 7919) % 1000003);
@@ -631,7 +631,7 @@ static void sw_key(char *buf, size_t cap, int i)
  * after a failure: size, find, validate, and the caller's value not freed. */
 static void sw_insert(struct sweep *w, int i)
 {
-	char key[8];
+	char key[32];
 	sw_key(key, sizeof key, i);
 	int idx = (i * 73) % SW_KEYS;
 
@@ -663,7 +663,7 @@ static void sw_insert(struct sweep *w, int i)
 
 static void sw_delete(struct sweep *w, int i)
 {
-	char key[8];
+	char key[32];
 	sw_key(key, sizeof key, i);
 	int idx = (i * 73) % SW_KEYS;
 
@@ -706,7 +706,7 @@ static int sw_run(int pooled, long n)
 	CHECK(rb_validate(w.t) == 0, "tree invalid at end of scenario");
 	CHECK(rb_size(w.t) == w.msize, "size differs from the reference model");
 	for (int i = 0; i < SW_KEYS; i++) {
-		char key[8];
+		char key[32];
 		snprintf(key, sizeof key, "k%03d", i);
 		CHECK(rb_find(w.t, key) == w.mv[i], "model key missing or wrong value");
 	}
@@ -752,7 +752,7 @@ static void test_small_stack(int pooled)
 	       n, pooled ? "pooled" : "plain");
 	struct stack_job j = { .t = pooled ? rb_create_pooled(NULL) : rb_create(NULL),
 	                       .c = { .ok = 1 } };
-	char key[16];
+	char key[32];
 	for (size_t i = 0; i < n; i++) {
 		snprintf(key, sizeof key, "%07zu", (i * 7919) % 1000003);
 		if (rb_insert(j.t, key, NULL) != 0) {
